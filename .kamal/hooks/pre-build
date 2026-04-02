@@ -1,0 +1,57 @@
+#!/bin/bash
+set -e
+
+# Build the Manifold client Docker image, push it to the local registry, and
+# pre-pull it on the server.
+#
+# Kamal builds the primary service (API) image automatically. The client runs
+# as an accessory, so we build and distribute its image here.
+#
+# Kamal's local registry SSH tunnel is only active while pulling the primary
+# (API) image. By the time accessories boot, the tunnel is closed, so the
+# server cannot pull accessory images from the local registry on its own. To
+# work around this, we open a temporary reverse SSH tunnel and pull the client
+# image on the server ourselves.
+#
+# To avoid unnecessary rebuilds, the client image is tagged with the git hash
+# of the last commit that touched the client directory. If that tag already
+# exists on the server, the build is skipped entirely.
+#
+# Note: Kamal captures hook stdout and stderr, so all output is sent to
+# /dev/tty to remain visible in the terminal during execution.
+
+TTY=/dev/tty
+
+MANIFOLD_CLIENT_IMAGE="localhost:5555/manifold-client"
+SERVER="${KAMAL_HOSTS%%,*}"
+LOCAL_REGISTRY_PORT=5555
+
+# Use the git hash of the last commit that changed the client as a
+# content-addressable tag. This lets us skip rebuilds when only the API changed.
+CLIENT_TAG=$(git -C manifold log -1 --format=%h -- client)
+
+if ssh root@${SERVER} "docker image inspect ${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG}" > /dev/null 2>&1; then
+  echo "==> Client image ${CLIENT_TAG} already exists on ${SERVER}, skipping build." > $TTY
+  exit 0
+fi
+
+echo "==> Building Manifold client image (${CLIENT_TAG})..." > $TTY
+docker build \
+  --progress=plain \
+  --platform linux/amd64 \
+  -t "${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG}" \
+  -t "${MANIFOLD_CLIENT_IMAGE}:latest" \
+  --target production \
+  -f manifold/client/Dockerfile \
+  manifold/client > $TTY 2>&1
+
+echo "==> Pushing client image to local registry..." > $TTY
+docker push "${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG}" > $TTY 2>&1
+docker push "${MANIFOLD_CLIENT_IMAGE}:latest" > $TTY 2>&1
+
+echo "==> Pre-pulling client image on ${SERVER}..." > $TTY
+ssh -R ${LOCAL_REGISTRY_PORT}:localhost:${LOCAL_REGISTRY_PORT} root@${SERVER} \
+  "docker pull ${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG} && \
+   docker tag ${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG} ${MANIFOLD_CLIENT_IMAGE}:latest" > $TTY 2>&1
+
+echo "==> Client image ready." > $TTY

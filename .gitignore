@@ -1,0 +1,6 @@
+.kamal/secrets
+.kamal/secrets.*
+!.kamal/secrets-example
+config/deploy.*.yml
+.env
+.idea/

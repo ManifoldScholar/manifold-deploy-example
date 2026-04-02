@@ -1,0 +1,54 @@
+# =============================================================================
+# Instance-specific overrides (untracked)
+# =============================================================================
+#
+# Copy this file to config/deploy.<destination>.yml (e.g. deploy.production.yml)
+# and fill in your values. This deep-merges on top of deploy.yml.
+#
+# Then run all Kamal commands with -d <destination>:
+#   kamal setup -d production
+#   kamal deploy -d production
+#   etc.
+#
+# Secrets go in .kamal/secrets.<destination> (e.g. .kamal/secrets.production)
+#
+# =============================================================================
+
+x-server-ip: &server-ip "203.0.113.1"
+x-domain: &domain "manifold.example.com"
+x-client-url: &client-url "https://manifold.example.com"
+x-storage-url: &storage-url "http://manifold.example.com:9000"
+
+servers:
+  web:
+    hosts:
+      - *server-ip
+
+proxy:
+  host: *domain
+
+env:
+  clear:
+    DOMAIN: *domain
+    CLIENT_BROWSER_API_URL: *client-url
+
+accessories:
+  db:
+    host: *server-ip
+  storage:
+    host: *server-ip
+  client:
+    host: *server-ip
+    proxy:
+      host: *domain
+    env:
+      clear:
+        DOMAIN: *domain
+        CLIENT_URL: *client-url
+        CLIENT_BROWSER_API_URL: *client-url
+        CLIENT_BROWSER_API_CABLE_URL: *client-url
+  worker:
+    host: *server-ip
+    env:
+      clear:
+        DOMAIN: *domain
