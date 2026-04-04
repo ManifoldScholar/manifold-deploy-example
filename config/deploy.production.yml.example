@@ -14,10 +14,18 @@
 #
 # =============================================================================
 
-x-server-ip: &server-ip "203.0.113.1"
-x-domain: &domain "manifold.example.com"
-x-client-url: &client-url "https://manifold.example.com"
-x-storage-url: &storage-url "http://manifold.example.com:9000"
+# -- Change these two values -------------------------------------------------
+<% server_ip = "203.0.113.1" %>
+<% domain    = "manifold.example.com" %>
+# -----------------------------------------------------------------------------
+
+<% client_url  = "https://#{domain}" %>
+<% storage_url = "http://#{domain}:9000" %>
+
+x-server-ip:   &server-ip   "<%= server_ip %>"
+x-domain:      &domain       "<%= domain %>"
+x-client-url:  &client-url   "<%= client_url %>"
+x-storage-url: &storage-url  "<%= storage_url %>"
 
 servers:
   web:
@@ -31,6 +39,7 @@ env:
   clear:
     DOMAIN: *domain
     CLIENT_BROWSER_API_URL: *client-url
+    UPLOAD_CDN_HOST: *storage-url
 
 accessories:
   db:
@@ -52,3 +61,4 @@ accessories:
     env:
       clear:
         DOMAIN: *domain
+        UPLOAD_CDN_HOST: *storage-url
