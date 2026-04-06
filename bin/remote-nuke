@@ -3,8 +3,11 @@
 # Completely remove a Manifold deployment from the server.
 #
 # Removes accessories first (while kamal-proxy is still running),
-# then removes the app and proxy. Falls back to manual Docker cleanup
+# then removes the app. Falls back to manual Docker cleanup
 # if kamal commands fail (e.g. proxy already gone from a prior failed remove).
+#
+# This only removes the specified destination. Other destinations on the
+# same host, kamal-proxy, and the shared .kamal directory are left intact.
 #
 # Usage:
 #   bin/remote-nuke -d <destination>
@@ -13,11 +16,16 @@ require_relative "remote-lib"
 
 host, ssh_user, dest, _ = resolve_host_from_argv
 
-ACCESSORIES = %w[db storage client]
-CONTAINERS  = ACCESSORIES.map { |a| "manifold-#{a}" }
+# Detect accessories from the merged kamal config for this destination.
+base = parse_config("config/deploy.yml")
+dest_config = parse_config("config/deploy.#{dest}.yml")
+merged_accessories = (base["accessories"] || {}).merge(dest_config["accessories"] || {})
+ACCESSORIES = merged_accessories.keys
+PREFIX = "manifold-#{dest}"
+CONTAINERS  = ACCESSORIES.map { |a| "#{PREFIX}-#{a}" }
 
 puts "This will completely remove the Manifold deployment '#{dest}' from #{host}."
-puts "All containers, images, volumes, and data directories will be deleted."
+puts "All containers, volumes, and data directories for this destination will be deleted."
 puts "Data that has not been backed up will be lost. Are you sure you want to do this?"
 print "\nType 'yes' to confirm: "
 confirm = $stdin.gets&.strip
@@ -38,8 +46,8 @@ ACCESSORIES.each do |name|
   end
 end
 
-puts "==> Removing app and proxy via kamal..."
-unless system("kamal", "remove", "-d", dest, "--confirmed")
+puts "==> Removing app via kamal..."
+unless system("kamal", "app", "remove", "-d", dest)
   all_ok = false
 end
 
@@ -48,30 +56,28 @@ unless all_ok
   puts ""
   puts "==> Kamal cleanup incomplete, removing remaining containers directly..."
   system("ssh", "#{ssh_user}@#{host}",
-    "docker rm -f #{CONTAINERS.join(' ')} kamal-proxy 2>/dev/null; " \
-    "docker container prune -f --filter label=service=manifold 2>/dev/null; " \
+    "docker rm -f #{CONTAINERS.join(' ')} 2>/dev/null; " \
+    "docker container prune -f --filter label=service=manifold --filter label=destination=#{dest} 2>/dev/null; " \
     "true"
   )
 end
 
-# Step 3: Clean up images, volumes, and data directories
+# Step 3: Clean up volumes and data directories for this destination only
 puts ""
-puts "==> Cleaning up images, volumes, and data directories..."
+puts "==> Cleaning up volumes and data directories..."
 system("ssh", "#{ssh_user}@#{host}", <<~BASH)
-  docker image rm -f $(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E 'manifold|minio|postgres|kamal-proxy') 2>/dev/null
-  docker volume rm kamal-proxy-config 2>/dev/null
-  rm -rf manifold-db manifold-storage .kamal 2>/dev/null
-  docker system prune -f 2>/dev/null
+  docker volume rm #{dest}-uploads 2>/dev/null
+  rm -rf #{PREFIX}-* 2>/dev/null
   true
 BASH
 
 # Step 4: Verify nothing is left
 puts ""
 puts "==> Verifying cleanup..."
-remaining = `ssh #{ssh_user}@#{host} "docker ps -a --format '{{.Names}}' | grep -E 'manifold|kamal-proxy'"`.strip
+remaining = `ssh #{ssh_user}@#{host} "docker ps -a --format '{{.Names}}' | grep -E '#{PREFIX}'"`.strip
 
 if remaining.empty?
-  puts "==> Server is clean."
+  puts "==> Destination '#{dest}' removed."
   puts ""
   puts "To redeploy: kamal setup -d #{dest}"
 else

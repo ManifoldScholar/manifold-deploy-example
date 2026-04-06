@@ -23,9 +23,18 @@ def client_tag
   @client_tag ||= `git -C manifold log -1 --format=%h -- client`.strip
 end
 
+def ensure_latest_tag_on_server
+  unless image_exists_on_server?("#{CLIENT_IMAGE}:latest")
+    tty "==> Tagging #{client_tag} as latest on #{server}..."
+    run "ssh", "root@#{server}",
+      "docker tag #{CLIENT_IMAGE}:#{client_tag} #{CLIENT_IMAGE}:latest"
+  end
+end
+
 def ensure_client_image
   if image_exists_on_server?("#{CLIENT_IMAGE}:#{client_tag}")
     tty "==> Client image #{client_tag} already exists on #{server}, skipping build."
+    ensure_latest_tag_on_server
     return
   end
 
