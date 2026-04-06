@@ -14,19 +14,20 @@ Everything runs on one machine: the application, the database, and object storag
 
 Kamal deploys five containers to a single server, all connected over a shared Docker network (`kamal`):
 
-| Container          | Role                              | Image Source              |
-|--------------------|-----------------------------------|---------------------------|
-| `manifold-web`     | Rails API server (primary)        | `manifold/api`            |
-| `manifold-client`  | Client / SSR frontend             | `manifold/client`         |
-| `manifold-worker`  | Background job processor (GoodJob)| `manifold/api`            |
-| `manifold-db`      | PostgreSQL 15 database            | `postgres:15-alpine`      |
-| `manifold-storage` | S3-compatible object storage      | `minio/minio`             |
+| Container          | Role                              | Image Source              | Managed as        |
+|--------------------|-----------------------------------|---------------------------|--------------------|
+| `manifold-web`     | Rails API server (primary)        | `manifold/api`            | Server role (web)  |
+| `manifold-worker`  | Background job processor (GoodJob)| `manifold/api`            | Server role (worker)|
+| `manifold-client`  | Client / SSR frontend             | `manifold/client`         | Accessory          |
+| `manifold-db`      | PostgreSQL 15 database            | `postgres:15-alpine`      | Accessory          |
+| `manifold-storage` | S3-compatible object storage      | `minio/minio`             | Accessory          |
 
-The Rails API is the **primary service**, which means `kamal deploy` does zero-downtime deploys of the API, and commands like `kamal console` and `kamal shell` connect directly to it. The client, worker, database, and storage run as **accessories**.
+The Rails API and worker are **server roles**, which means they share the same Docker image and are deployed together with zero downtime by `kamal deploy`. The client, database, and storage run as **accessories**.
 
 kamal-proxy handles incoming HTTPS traffic and routes requests by path:
 
-- `/api/*` requests go **directly to the API** container
+- `/api/*` requests go to the **API** container
+- `/manifold-storage/*` requests go to **MinIO** (object storage)
 - All other requests go to the **client** container (SSR frontend)
 
 The client also proxies `/system` (uploaded assets) and `/api/proxy` paths to the API internally.
@@ -37,14 +38,16 @@ Internet
   v
 kamal-proxy (:80/:443, Let's Encrypt TLS)
   |
-  |-- /api/* -------> manifold-web (Rails API, :3011)  [primary service]
-  |                    |---> manifold-db (PostgreSQL, :5432)
-  |                    +---> manifold-storage (MinIO, :9000)
+  |-- /api/* -----------------> manifold-web (Rails API, :3011)  [server role]
+  |                              |---> manifold-db (PostgreSQL, :5432)
+  |                              +---> manifold-storage (MinIO, :9000)
   |
-  +-- /* -----------> manifold-client (SSR frontend, :3010)  [accessory]
-                       +---> manifold-web (internal proxy for /system)
+  |-- /manifold-storage/* ----> manifold-storage (MinIO, :9000)  [accessory]
+  |
+  +-- /* ---------------------> manifold-client (SSR frontend, :3010)  [accessory]
+                                 +---> manifold-web (internal proxy for /system)
 
-manifold-worker (GoodJob)  [accessory]
+manifold-worker (GoodJob)  [server role]
   |---> manifold-db
   +---> manifold-storage
 ```
@@ -86,15 +89,14 @@ Pick a destination name (e.g. `production`, `staging`, or any name you like):
 cp config/deploy.production.yml.example config/deploy.production.yml
 ```
 
-Edit `config/deploy.production.yml` and update the three values at the top:
+Edit `config/deploy.production.yml` and update the two values at the top:
 
-```yaml
-x-server-ip: &server-ip "203.0.113.1"              # <- Your server's public IP
-x-domain: &domain "manifold.example.com"            # <- Your domain name
-x-client-url: &client-url "https://manifold.example.com"  # <- https:// + your domain
+```ruby
+server_ip = "203.0.113.1"         # <- Your server's public IP
+domain    = "manifold.example.com" # <- Your domain name
 ```
 
-The rest of the file uses YAML anchors to propagate these values to every place they're needed. The destination file deep-merges on top of `deploy.yml`, so all other settings (env vars, builder config, etc.) are inherited automatically.
+The rest of the file uses ERB to derive URLs and YAML anchors to propagate these values everywhere they're needed. The destination file deep-merges on top of `deploy.yml`, so all other settings (env vars, builder config, etc.) are inherited automatically.
 
 **Check your server's architecture.** The default builder is configured for `amd64`. If your server uses a different architecture, add a `builder` override to your destination file:
 
@@ -152,14 +154,11 @@ The first deploy takes a few minutes while the database schema is loaded and ini
 
 ### 5. Create an admin user
 
-Create your first admin account using the Kamal shell alias:
-
 ```bash
-kamal shell -d production
-bin/rails 'manifold:user:create:admin[you@example.com,First,Last]'
+bin/remote-admin -d production
 ```
 
-You'll be prompted for a password.
+You'll be prompted for an email, name, and password.
 
 ### 6. Verify
 
@@ -170,13 +169,10 @@ Visit `https://your-domain.com` and log in with the admin account you just creat
 When you want to redeploy after a Manifold update or configuration change:
 
 ```bash
-# Deploy the API (primary service) -- zero-downtime
 kamal deploy -d production
-
-# Update the client and worker accessories (brief restart)
-kamal accessory reboot client -d production
-kamal accessory reboot worker -d production
 ```
+
+This does a zero-downtime deploy of the API and worker (both server roles). The `post-deploy` hook automatically reboots the client accessory so it picks up the latest image.
 
 The API container automatically runs migrations and upgrade tasks on startup, so no separate release command is needed.
 
@@ -196,8 +192,6 @@ git commit -m "Update Manifold to $(git -C manifold rev-parse --short HEAD)"
 
 # Deploy the new version
 kamal deploy -d production
-kamal accessory reboot api -d production
-kamal accessory reboot worker -d production
 ```
 
 To pin to a specific release tag:
@@ -211,6 +205,43 @@ git add manifold
 git commit -m "Pin Manifold to v9.0.0"
 ```
 
+## Helper Scripts
+
+The `bin/` directory contains helper scripts for common remote operations. All require `-d <destination>`.
+
+| Script              | Description                                        |
+|---------------------|----------------------------------------------------|
+| `bin/remote-admin`  | Create an admin user (prompts for email/name/password) |
+| `bin/remote-status` | Show containers, volumes, images, and disk usage   |
+| `bin/remote-logs`   | Tail logs from any container                       |
+| `bin/remote`        | Run an arbitrary command on the server via SSH     |
+| `bin/remote-nuke`   | Completely remove a deployment (containers, images, data) |
+
+### Examples
+
+```bash
+# Create an admin user
+bin/remote-admin -d production
+
+# Check what's running
+bin/remote-status -d production
+
+# Tail API logs
+bin/remote-logs -d production api
+
+# Tail client logs
+bin/remote-logs -d production client
+
+# Tail storage logs with custom flags
+bin/remote-logs -d production storage --tail 50 --no-follow
+
+# Run a command on the server
+bin/remote -d production "docker stats --no-stream"
+
+# Completely remove a deployment and start over
+bin/remote-nuke -d production
+```
+
 ## Configuration Reference
 
 ### File layout
@@ -222,6 +253,8 @@ config/deploy.production.yml.example # Template for the above (tracked)
 .kamal/secrets.production            # Your secrets (untracked)
 .kamal/secrets-example               # Template for the above (tracked)
 .kamal/hooks/pre-build               # Builds the client image before each deploy
+.kamal/hooks/post-deploy             # Reboots the client accessory after each deploy
+.kamal/hooks/lib/deploy_helpers.rb   # Shared helper methods for hooks
 ```
 
 All Kamal commands require `-d <destination>` to load your instance config:
@@ -257,10 +290,11 @@ The client image is built separately by the `.kamal/hooks/pre-build` hook using 
 
 kamal-proxy terminates TLS (via Let's Encrypt) and routes by path:
 
-- The **API** (primary service) handles `/api/*` requests on port 3011, configured via `path_prefixes: ["/api"]` and `strip_path_prefix: false` (the full `/api/...` path is forwarded to Rails)
+- The **API** (server role) handles `/api/*` requests on port 3011, configured via `path_prefixes: ["/api"]` and `strip_path_prefix: false` (the full `/api/...` path is forwarded to Rails)
+- **MinIO** (storage accessory) handles `/manifold-storage/*` requests on port 9000, serving uploaded assets directly
 - The **client** accessory handles all other requests on port 3010
 
-This matches Manifold's production architecture where `/api` traffic goes directly to Rails without passing through the Node SSR layer.
+This matches Manifold's production architecture where `/api` traffic goes directly to Rails without passing through the Node SSR layer, and uploaded assets are served directly from object storage.
 
 ### Environment variables -- Client
 
@@ -295,6 +329,7 @@ This matches Manifold's production architecture where `/api` traffic goes direct
 | `S3_FORCE_PATH_STYLE`    | `true`                              | Required for MinIO                         |
 | `S3_REGION`              | `us-east-1`                         | S3 region (MinIO ignores this)             |
 | `UPLOAD_BUCKET`          | `manifold-storage`                  | MinIO bucket name                          |
+| `UPLOAD_CDN_HOST`        | `https://your-domain`               | Public URL for asset downloads             |
 | `PGHOST`                 | `manifold-db`                       | Used by `psql` during schema loading       |
 | `PGUSER`                 | `manifold`                          | Used by `psql` during schema loading       |
 | `GOOD_JOB_PROBE_PORT`    | `7001`                              | Health probe port (worker only)            |
@@ -342,22 +377,22 @@ kamal accessory logs db -d production           # PostgreSQL logs
 kamal accessory logs storage -d production      # MinIO logs
 
 # Run a one-off Rails command
-kamal app exec -d production "bin/rails runner 'puts Manifold::VERSION'"
+kamal app exec -d production -r web "bin/rails runner 'puts Manifold::VERSION'"
 
 # Restart a specific accessory
 kamal accessory reboot client -d production
-kamal accessory reboot worker -d production
+kamal accessory reboot storage -d production
 
 # Stop everything
 kamal app stop -d production
 
 # Remove everything (containers, images, and data)
-kamal remove -d production
+bin/remote-nuke -d production
 ```
 
 ## Data and Backups
 
-Persistent data is stored in bind-mounted directories on the server under Kamal's storage path (typically `/var/lib/kamal/`):
+Persistent data is stored in bind-mounted directories on the server:
 
 | Accessory  | Container path               | Contents                  |
 |------------|------------------------------|---------------------------|
@@ -375,7 +410,7 @@ ssh root@your-server "docker exec manifold-db pg_dump -U manifold manifold_produ
 The default configuration runs PostgreSQL and MinIO as Docker containers on the same server. If you prefer managed services (e.g. a managed PostgreSQL database or S3-compatible storage like DigitalOcean Spaces or AWS S3):
 
 1. Remove the `db` and/or `storage` accessory from `config/deploy.yml` (or override them in your destination file)
-2. Update the environment variables in the `api` and `worker` accessories via your destination file:
+2. Update the environment variables via your destination file:
 
 **For an external database**, override the `RAILS_DB_*` and `RAILS_CACHE_DB_*` variables to point to your managed database. Alternatively, you can replace all the individual database variables with `DATABASE_URL` and `CACHE_DATABASE_URL` (Rails connection strings).
 
@@ -414,6 +449,18 @@ The API may not be running or healthy. Verify:
 ```bash
 kamal app details -d production
 kamal app logs -d production
+```
+
+**Assets return 404:**
+Check that the storage accessory's proxy host matches your domain and that MinIO is running:
+```bash
+bin/remote-status -d production
+```
+
+**`kamal remove` leaves orphaned containers:**
+Kamal's `remove` command can fail partway through, leaving stale containers. Use `bin/remote-nuke` instead, which handles cleanup gracefully:
+```bash
+bin/remote-nuke -d production
 ```
 
 ## License

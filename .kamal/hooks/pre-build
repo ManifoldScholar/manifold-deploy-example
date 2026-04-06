@@ -1,16 +1,11 @@
 #!/usr/bin/env ruby
 #
-# Pre-build hook for Kamal deployments. Handles two things:
+# Pre-build hook for Kamal deployments.
 #
-# 1. Client image: Build, push to local registry, and pre-pull on the server.
-#    Kamal only builds the primary (API) image. The client runs as an accessory,
-#    so we handle its image here. Tagged with the git hash of the last client
-#    commit to skip unnecessary rebuilds.
-#
-# 2. API "latest" tag: The worker accessory references the API image as
-#    "localhost:5555/manifold-api:latest", but kamal only pulls it with a
-#    commit-specific tag. We tag whatever API image exists on the server as
-#    "latest" so the worker can find it.
+# Builds, pushes, and pre-pulls the client image on the server. Kamal only
+# builds the primary (API) image. The client runs as an accessory, so we
+# handle its image here. Tagged with the git hash of the last client commit
+# to skip unnecessary rebuilds.
 #
 # Kamal's local registry SSH tunnel is only active while pulling the primary
 # image. By the time accessories boot, the tunnel is closed. We open our own
@@ -21,7 +16,6 @@
 require_relative "lib/deploy_helpers"
 
 CLIENT_IMAGE = "localhost:5555/manifold-client"
-API_IMAGE = "localhost:5555/manifold-api"
 
 # ---------------------------------------------------------------------------
 
@@ -57,21 +51,6 @@ def ensure_client_image
   tty "==> Client image ready."
 end
 
-def ensure_api_latest_tag
-  existing_tag = ssh_capture(
-    "docker images #{API_IMAGE} --format '{{.Tag}}' | grep -v latest | head -1"
-  )
-
-  if existing_tag.empty?
-    tty "==> No API image on #{server} yet (first deploy)."
-    tty "    After setup, run: kamal accessory reboot worker -d <destination>"
-  else
-    tty "==> Tagging API image (#{existing_tag}) as 'latest' on #{server}..."
-    ssh "docker tag #{API_IMAGE}:#{existing_tag} #{API_IMAGE}:latest"
-  end
-end
-
 # ---------------------------------------------------------------------------
 
 ensure_client_image
-ensure_api_latest_tag

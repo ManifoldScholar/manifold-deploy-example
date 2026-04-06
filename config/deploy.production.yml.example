@@ -19,16 +19,17 @@
 <% domain    = "manifold.example.com" %>
 # -----------------------------------------------------------------------------
 
-<% client_url  = "https://#{domain}" %>
-<% storage_url = "http://#{domain}:9000" %>
+<% client_url = "https://#{domain}" %>
 
-x-server-ip:   &server-ip   "<%= server_ip %>"
-x-domain:      &domain       "<%= domain %>"
-x-client-url:  &client-url   "<%= client_url %>"
-x-storage-url: &storage-url  "<%= storage_url %>"
+x-server-ip:  &server-ip  "<%= server_ip %>"
+x-domain:     &domain      "<%= domain %>"
+x-client-url: &client-url  "<%= client_url %>"
 
 servers:
   web:
+    hosts:
+      - *server-ip
+  worker:
     hosts:
       - *server-ip
 
@@ -39,13 +40,15 @@ env:
   clear:
     DOMAIN: *domain
     CLIENT_BROWSER_API_URL: *client-url
-    UPLOAD_CDN_HOST: *storage-url
+    UPLOAD_CDN_HOST: *client-url
 
 accessories:
   db:
     host: *server-ip
   storage:
     host: *server-ip
+    proxy:
+      host: *domain
   client:
     host: *server-ip
     proxy:
@@ -56,9 +59,3 @@ accessories:
         CLIENT_URL: *client-url
         CLIENT_BROWSER_API_URL: *client-url
         CLIENT_BROWSER_API_CABLE_URL: *client-url
-  worker:
-    host: *server-ip
-    env:
-      clear:
-        DOMAIN: *domain
-        UPLOAD_CDN_HOST: *storage-url

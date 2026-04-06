@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+#
+# Create an admin user on the remote Manifold instance.
+#
+# Usage:
+#   bin/remote-admin -d <destination>
+#
+# Prompts for email, name, and password, then runs the Manifold
+# rake task to create the admin user.
+#
+require_relative "remote-lib"
+
+_, _, dest, _ = resolve_host_from_argv
+
+print "Email: "
+email = $stdin.gets&.strip
+abort "Email is required." if email.nil? || email.empty?
+
+print "First name: "
+first_name = $stdin.gets&.strip
+abort "First name is required." if first_name.nil? || first_name.empty?
+
+print "Last name: "
+last_name = $stdin.gets&.strip
+abort "Last name is required." if last_name.nil? || last_name.empty?
+
+cmd = "bin/rails 'manifold:user:create:admin[#{email},#{first_name},#{last_name}]'"
+
+exec("kamal", "app", "exec", "-i", "-d", dest, "-r", "web", "--reuse", cmd)

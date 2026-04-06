@@ -13,7 +13,7 @@ require_relative "remote-lib"
 
 host, ssh_user, dest, _ = resolve_host_from_argv
 
-ACCESSORIES = %w[db storage client worker]
+ACCESSORIES = %w[db storage client]
 CONTAINERS  = ACCESSORIES.map { |a| "manifold-#{a}" }
 
 puts "This will completely remove the Manifold deployment '#{dest}' from #{host}."
