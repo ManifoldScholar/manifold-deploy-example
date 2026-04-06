@@ -2,17 +2,29 @@
 #
 # Post-deploy hook for Kamal deployments.
 #
-# Reboots the client accessory so it picks up the latest image pushed
+# Restarts the client accessory so it picks up the latest image pushed
 # during pre-build. Without this, `kamal deploy` only updates the API
 # and worker roles — the client accessory keeps running the old image.
+#
+# We can't use `kamal accessory reboot` because it tries to pull the
+# image from the local registry, but the SSH tunnel is closed by now.
+# Instead, stop/remove the old container directly, then boot via kamal
+# which uses the already-pulled image.
 #
 # Note: Kamal captures hook stdout/stderr, so output goes to /dev/tty.
 
 require_relative "lib/deploy_helpers"
 
-tty "==> Rebooting client accessory..."
+dest = ENV["KAMAL_DESTINATION"]
+dest_flag = dest ? ["-d", dest] : []
+container = dest ? "manifold-#{dest}-client" : "manifold-client"
 
-dest_flag = ENV["KAMAL_DESTINATION"] ? ["-d", ENV["KAMAL_DESTINATION"]] : []
-system("kamal", "accessory", "reboot", "client", *dest_flag, "--confirmed", out: TTY, err: TTY)
+tty "==> Updating client accessory..."
 
-tty "==> Client reboot complete."
+# Stop and remove the old container (if it exists)
+ssh_capture("docker stop #{container} 2>/dev/null; docker rm #{container} 2>/dev/null; true")
+
+# Boot the new container using the already-pulled image
+system("kamal", "accessory", "boot", "client", *dest_flag, out: TTY, err: TTY)
+
+tty "==> Client accessory updated."

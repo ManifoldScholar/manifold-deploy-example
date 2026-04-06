@@ -2,19 +2,17 @@
 # Manifold Self-Hosted Deployment Configuration (Kamal 2)
 # =============================================================================
 #
-# Before deploying:
-#   1. Update the two values in "Instance Configuration" below
-#   2. Copy .kamal/secrets-example to .kamal/secrets and fill in your secrets
-#   3. See README.md for complete setup instructions
+# Run bin/setup to generate your instance configuration. This base file
+# contains defaults shared by all destinations.
 #
 # =============================================================================
 
 # -- Instance Configuration ---------------------------------------------------
-# These are the only values you MUST change before deploying.
+# Overridden by each destination file (config/deploy.<dest>.yml).
 
-x-server-ip: &server-ip "203.0.113.1"          # Your server's public IP address
-x-domain: &domain "manifold.example.com"        # Your domain (must have DNS pointing to server)
-x-client-url: &client-url "https://manifold.example.com"  # https:// + your domain
+x-server-ip: &server-ip "203.0.113.1"
+x-domain: &domain "manifold.example.com"
+x-client-url: &client-url "https://manifold.example.com"
 
 # -- Shared Rails env (API + Worker) ------------------------------------------
 # These are shared via YAML merge keys (<<: *rails-env / *rails-secrets).
@@ -34,14 +32,6 @@ x-rails-env: &rails-env
   RAILS_CACHE_DB_HOST: manifold-db
   RAILS_CACHE_DB_USER: manifold
   RAILS_CACHE_DB_NAME: manifold_cache_production
-  MANIFOLD_SETTINGS_STORAGE_PRIMARY: s3
-  MANIFOLD_SETTINGS_STORAGE_PRIMARY_PREFIX: store
-  MANIFOLD_SETTINGS_STORAGE_CACHE_PREFIX: cache
-  MANIFOLD_SETTINGS_STORAGE_TUS_PREFIX: cache
-  S3_ENDPOINT: "http://manifold-storage:9000"
-  S3_FORCE_PATH_STYLE: "true"
-  S3_REGION: us-east-1
-  UPLOAD_BUCKET: manifold-storage
   PGHOST: manifold-db
   PGUSER: manifold
 
@@ -50,8 +40,6 @@ x-rails-secrets: &rails-secrets
   - RAILS_SECRET_KEY
   - RAILS_DB_PASS
   - RAILS_CACHE_DB_PASS
-  - S3_ACCESS_KEY_ID
-  - S3_SECRET_ACCESS_KEY
   - PGPASSWORD
 
 # -- Service ------------------------------------------------------------------
@@ -67,7 +55,7 @@ servers:
       - *server-ip
     options:
       network-alias: manifold-api
-    cmd: bash -c "bin/ensure-bucket && bin/ensure-db && bin/rails manifold:upgrade && exec bin/puma -C config/puma.rb"
+    cmd: bash -c "bin/ensure-db && bin/rails manifold:upgrade && exec bin/puma -C config/puma.rb"
   worker:
     hosts:
       - *server-ip
@@ -78,7 +66,6 @@ servers:
 
 proxy:
   host: *domain
-  ssl: true
   app_port: 3011
   path_prefixes:
     - /api
@@ -133,7 +120,7 @@ aliases:
 # -- Accessories --------------------------------------------------------------
 # These services support the primary API application. They share the "kamal"
 # Docker network and reach each other by container name (e.g. manifold-client,
-# manifold-db, manifold-storage).
+# manifold-db).
 
 accessories:
   db:
@@ -150,32 +137,12 @@ accessories:
     options:
       shm-size: 2g
 
-  storage:
-    image: minio/minio:RELEASE.2022-09-25T15-44-53Z
-    host: *server-ip
-    proxy:
-      host: *domain
-      app_port: 9000
-      path_prefixes:
-        - /manifold-storage
-      strip_path_prefix: false
-      healthcheck:
-        path: /minio/health/live
-    options:
-      publish: "9001:9001"
-    cmd: server /data --console-address ":9001"
-    env:
-      secret:
-        - MINIO_ROOT_USER
-        - MINIO_ROOT_PASSWORD
-    directories:
-      - data:/data
-
   client:
     image: localhost:5555/manifold-client:latest
     host: *server-ip
     proxy:
       host: *domain
+      ssl: true
       app_port: 3010
       forward_headers: true
     env:

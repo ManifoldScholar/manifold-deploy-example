@@ -1,30 +1,29 @@
 #!/usr/bin/env ruby
 #
-# Show the state of everything on the kamal host:
-# containers, volumes, images, disk usage, and kamal-proxy.
+# Show the state of a specific destination on the kamal host:
+# containers, volumes, disk usage, and kamal-proxy.
 #
 # Usage:
 #   bin/remote-status -d <destination>
 #
 require_relative "remote-lib"
 
-host, ssh_user, _, _ = resolve_host_from_argv
+host, ssh_user, dest, _ = resolve_host_from_argv
+
+# All containers for this destination are prefixed with manifold-<dest>
+prefix = "manifold-#{dest}"
 
 ssh_exec host, ssh_user, <<~BASH
   echo "=== Containers ==="
-  docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+  docker ps -a --filter name=#{dest} --filter name=kamal-proxy --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 
   echo ""
   echo "=== Volumes ==="
-  docker volume ls --format 'table {{.Name}}\t{{.Driver}}'
-
-  echo ""
-  echo "=== Images ==="
-  docker image ls --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}'
+  docker volume ls --filter name=#{dest} --format 'table {{.Name}}\t{{.Driver}}'
 
   echo ""
   echo "=== Disk (data directories) ==="
-  du -sh manifold-* 2>/dev/null || echo "No data directories"
+  du -sh #{prefix}-* 2>/dev/null || echo "No data directories"
 
   echo ""
   echo "=== kamal-proxy ==="
