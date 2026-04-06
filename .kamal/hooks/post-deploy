@@ -1,0 +1,18 @@
+#!/usr/bin/env ruby
+#
+# Post-deploy hook for Kamal deployments.
+#
+# Reboots the client accessory so it picks up the latest image pushed
+# during pre-build. Without this, `kamal deploy` only updates the API
+# and worker roles — the client accessory keeps running the old image.
+#
+# Note: Kamal captures hook stdout/stderr, so output goes to /dev/tty.
+
+require_relative "lib/deploy_helpers"
+
+tty "==> Rebooting client accessory..."
+
+dest_flag = ENV["KAMAL_DESTINATION"] ? ["-d", ENV["KAMAL_DESTINATION"]] : []
+system("kamal", "accessory", "reboot", "client", *dest_flag, "--yes", out: TTY, err: TTY)
+
+tty "==> Client reboot complete."
