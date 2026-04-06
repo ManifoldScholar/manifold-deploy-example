@@ -1,0 +1,82 @@
+#!/usr/bin/env ruby
+#
+# Completely remove a Manifold deployment from the server.
+#
+# Removes accessories first (while kamal-proxy is still running),
+# then removes the app and proxy. Falls back to manual Docker cleanup
+# if kamal commands fail (e.g. proxy already gone from a prior failed remove).
+#
+# Usage:
+#   bin/remote-nuke -d <destination>
+#
+require_relative "remote-lib"
+
+host, ssh_user, dest, _ = resolve_host_from_argv
+
+ACCESSORIES = %w[db storage client worker]
+CONTAINERS  = ACCESSORIES.map { |a| "manifold-#{a}" }
+
+puts "This will completely remove the Manifold deployment '#{dest}' from #{host}."
+puts "All containers, images, volumes, and data directories will be deleted."
+puts "Data that has not been backed up will be lost. Are you sure you want to do this?"
+print "\nType 'yes' to confirm: "
+confirm = $stdin.gets&.strip
+unless confirm == "yes"
+  puts "Aborted."
+  exit 1
+end
+
+puts ""
+
+# Step 1: Try the clean kamal path (accessories first, then app)
+puts "==> Removing accessories via kamal..."
+all_ok = true
+ACCESSORIES.each do |name|
+  puts "    Removing #{name}..."
+  unless system("kamal", "accessory", "remove", name, "-d", dest, "--confirmed")
+    all_ok = false
+  end
+end
+
+puts "==> Removing app and proxy via kamal..."
+unless system("kamal", "remove", "-d", dest, "--confirmed")
+  all_ok = false
+end
+
+# Step 2: If anything failed, clean up remaining containers directly
+unless all_ok
+  puts ""
+  puts "==> Kamal cleanup incomplete, removing remaining containers directly..."
+  system("ssh", "#{ssh_user}@#{host}",
+    "docker rm -f #{CONTAINERS.join(' ')} kamal-proxy 2>/dev/null; " \
+    "docker container prune -f --filter label=service=manifold 2>/dev/null; " \
+    "true"
+  )
+end
+
+# Step 3: Clean up images, volumes, and data directories
+puts ""
+puts "==> Cleaning up images, volumes, and data directories..."
+system("ssh", "#{ssh_user}@#{host}", <<~BASH)
+  docker image rm -f $(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E 'manifold|minio|postgres|kamal-proxy') 2>/dev/null
+  docker volume rm kamal-proxy-config 2>/dev/null
+  rm -rf manifold-db manifold-storage .kamal 2>/dev/null
+  docker system prune -f 2>/dev/null
+  true
+BASH
+
+# Step 4: Verify nothing is left
+puts ""
+puts "==> Verifying cleanup..."
+remaining = `ssh #{ssh_user}@#{host} "docker ps -a --format '{{.Names}}' | grep -E 'manifold|kamal-proxy'"`.strip
+
+if remaining.empty?
+  puts "==> Server is clean."
+  puts ""
+  puts "To redeploy: kamal setup -d #{dest}"
+else
+  puts "==> Warning: some containers remain:"
+  puts remaining
+  puts ""
+  puts "Remove manually: ssh #{ssh_user}@#{host} \"docker rm -f #{remaining.split.join(' ')}\""
+end

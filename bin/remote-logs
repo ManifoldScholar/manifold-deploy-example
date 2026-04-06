@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+#
+# Tail logs from a container on the kamal host.
+#
+# Usage:
+#   bin/remote-logs -d <destination> <container> [docker-logs-flags]
+#
+# Container shortcuts:
+#   api, web    -> the running kamal app container
+#   client      -> manifold-client
+#   db          -> manifold-db
+#   storage     -> manifold-storage
+#   worker      -> manifold-worker
+#   proxy       -> kamal-proxy
+#
+# Examples:
+#   bin/remote-logs -d zdtest api
+#   bin/remote-logs -d zdtest storage
+#   bin/remote-logs -d zdtest db --tail 50 --no-follow
+#
+require_relative "remote-lib"
+
+host, ssh_user, dest, args = resolve_host_from_argv
+
+container = args.shift
+
+if container.nil?
+  warn "Usage: bin/remote-logs -d <destination> <container> [docker-logs-flags]"
+  warn ""
+  warn "Containers: api, client, db, storage, worker, proxy"
+  exit 1
+end
+
+# Default to --tail 100 -f if no flags given
+log_flags = args.empty? ? "--tail 100 -f" : args.join(" ")
+
+# Map shortcut names to container resolution commands
+resolve = case container
+  when "api", "web"
+    "docker ps --filter label=service=manifold --filter label=destination=#{dest} --filter label=role=web --format '{{.Names}}' | head -1"
+  when "client"  then "echo manifold-client"
+  when "db"      then "echo manifold-db"
+  when "storage" then "echo manifold-storage"
+  when "worker"  then "echo manifold-worker"
+  when "proxy"   then "echo kamal-proxy"
+  else "echo #{container}"
+  end
+
+ssh_exec host, ssh_user, <<~BASH
+  CONTAINER_NAME=$(#{resolve})
+  if [ -z "$CONTAINER_NAME" ]; then
+    echo "No matching container found" >&2
+    exit 1
+  fi
+  docker logs $CONTAINER_NAME #{log_flags}
+BASH
