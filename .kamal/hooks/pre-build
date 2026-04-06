@@ -1,57 +1,77 @@
-#!/bin/bash
-set -e
-
-# Build the Manifold client Docker image, push it to the local registry, and
-# pre-pull it on the server.
+#!/usr/bin/env ruby
 #
-# Kamal builds the primary service (API) image automatically. The client runs
-# as an accessory, so we build and distribute its image here.
+# Pre-build hook for Kamal deployments. Handles two things:
+#
+# 1. Client image: Build, push to local registry, and pre-pull on the server.
+#    Kamal only builds the primary (API) image. The client runs as an accessory,
+#    so we handle its image here. Tagged with the git hash of the last client
+#    commit to skip unnecessary rebuilds.
+#
+# 2. API "latest" tag: The worker accessory references the API image as
+#    "localhost:5555/manifold-api:latest", but kamal only pulls it with a
+#    commit-specific tag. We tag whatever API image exists on the server as
+#    "latest" so the worker can find it.
 #
 # Kamal's local registry SSH tunnel is only active while pulling the primary
-# (API) image. By the time accessories boot, the tunnel is closed, so the
-# server cannot pull accessory images from the local registry on its own. To
-# work around this, we open a temporary reverse SSH tunnel and pull the client
-# image on the server ourselves.
+# image. By the time accessories boot, the tunnel is closed. We open our own
+# temporary tunnel to pull the client image.
 #
-# To avoid unnecessary rebuilds, the client image is tagged with the git hash
-# of the last commit that touched the client directory. If that tag already
-# exists on the server, the build is skipped entirely.
-#
-# Note: Kamal captures hook stdout and stderr, so all output is sent to
-# /dev/tty to remain visible in the terminal during execution.
+# Note: Kamal captures hook stdout/stderr, so output goes to /dev/tty.
 
-TTY=/dev/tty
+require_relative "lib/deploy_helpers"
 
-MANIFOLD_CLIENT_IMAGE="localhost:5555/manifold-client"
-SERVER="${KAMAL_HOSTS%%,*}"
-LOCAL_REGISTRY_PORT=5555
+CLIENT_IMAGE = "localhost:5555/manifold-client"
+API_IMAGE = "localhost:5555/manifold-api"
 
-# Use the git hash of the last commit that changed the client as a
-# content-addressable tag. This lets us skip rebuilds when only the API changed.
-CLIENT_TAG=$(git -C manifold log -1 --format=%h -- client)
+# ---------------------------------------------------------------------------
 
-if ssh root@${SERVER} "docker image inspect ${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG}" > /dev/null 2>&1; then
-  echo "==> Client image ${CLIENT_TAG} already exists on ${SERVER}, skipping build." > $TTY
-  exit 0
-fi
+def client_tag
+  @client_tag ||= `git -C manifold log -1 --format=%h -- client`.strip
+end
 
-echo "==> Building Manifold client image (${CLIENT_TAG})..." > $TTY
-docker build \
-  --progress=plain \
-  --platform linux/amd64 \
-  -t "${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG}" \
-  -t "${MANIFOLD_CLIENT_IMAGE}:latest" \
-  --target production \
-  -f manifold/client/Dockerfile \
-  manifold/client > $TTY 2>&1
+def ensure_client_image
+  if image_exists_on_server?("#{CLIENT_IMAGE}:#{client_tag}")
+    tty "==> Client image #{client_tag} already exists on #{server}, skipping build."
+    return
+  end
 
-echo "==> Pushing client image to local registry..." > $TTY
-docker push "${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG}" > $TTY 2>&1
-docker push "${MANIFOLD_CLIENT_IMAGE}:latest" > $TTY 2>&1
+  tty "==> Building Manifold client image (#{client_tag})..."
+  run "docker", "build",
+    "--progress=plain",
+    "--platform", "linux/amd64",
+    "-t", "#{CLIENT_IMAGE}:#{client_tag}",
+    "-t", "#{CLIENT_IMAGE}:latest",
+    "--target", "production",
+    "-f", "manifold/client/Dockerfile",
+    "manifold/client"
 
-echo "==> Pre-pulling client image on ${SERVER}..." > $TTY
-ssh -R ${LOCAL_REGISTRY_PORT}:localhost:${LOCAL_REGISTRY_PORT} root@${SERVER} \
-  "docker pull ${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG} && \
-   docker tag ${MANIFOLD_CLIENT_IMAGE}:${CLIENT_TAG} ${MANIFOLD_CLIENT_IMAGE}:latest" > $TTY 2>&1
+  tty "==> Pushing client image to local registry..."
+  run "docker", "push", "#{CLIENT_IMAGE}:#{client_tag}"
+  run "docker", "push", "#{CLIENT_IMAGE}:latest"
 
-echo "==> Client image ready." > $TTY
+  tty "==> Pre-pulling client image on #{server}..."
+  run "ssh", "-R", "#{REGISTRY_PORT}:localhost:#{REGISTRY_PORT}", "root@#{server}",
+    "docker pull #{CLIENT_IMAGE}:#{client_tag} && " \
+    "docker tag #{CLIENT_IMAGE}:#{client_tag} #{CLIENT_IMAGE}:latest"
+
+  tty "==> Client image ready."
+end
+
+def ensure_api_latest_tag
+  existing_tag = ssh_capture(
+    "docker images #{API_IMAGE} --format '{{.Tag}}' | grep -v latest | head -1"
+  )
+
+  if existing_tag.empty?
+    tty "==> No API image on #{server} yet (first deploy)."
+    tty "    After setup, run: kamal accessory reboot worker -d <destination>"
+  else
+    tty "==> Tagging API image (#{existing_tag}) as 'latest' on #{server}..."
+    ssh "docker tag #{API_IMAGE}:#{existing_tag} #{API_IMAGE}:latest"
+  end
+end
+
+# ---------------------------------------------------------------------------
+
+ensure_client_image
+ensure_api_latest_tag
