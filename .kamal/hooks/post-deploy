@@ -13,6 +13,6 @@ require_relative "lib/deploy_helpers"
 tty "==> Rebooting client accessory..."
 
 dest_flag = ENV["KAMAL_DESTINATION"] ? ["-d", ENV["KAMAL_DESTINATION"]] : []
-system("kamal", "accessory", "reboot", "client", *dest_flag, "--yes", out: TTY, err: TTY)
+system("kamal", "accessory", "reboot", "client", *dest_flag, "--confirmed", out: TTY, err: TTY)
 
 tty "==> Client reboot complete."
