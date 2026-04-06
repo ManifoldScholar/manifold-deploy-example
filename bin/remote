@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+#
+# Run a command on the kamal host via SSH.
+#
+# Usage:
+#   bin/remote -d <destination> <command>
+#   bin/remote -d zdtest "docker ps -a"
+#   bin/remote -d production "df -h"
+#
+require_relative "remote-lib"
+
+host, ssh_user, _, args = resolve_host_from_argv
+
+if args.empty?
+  warn "Usage: bin/remote -d <destination> <command>"
+  exit 1
+end
+
+exec("ssh", "#{ssh_user}@#{host}", *args)
