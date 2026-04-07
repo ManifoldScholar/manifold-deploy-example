@@ -8,26 +8,26 @@ This repository is a deployment template. It contains:
 - A **Kamal configuration** that builds Docker images from the submodule and deploys them to a single VM
 - A **local Docker registry** on the server, so you don't need a Docker Hub or GHCR account
 
-Everything runs on one machine: the application and the database. No managed services required.
+Everything runs on one machine: the application and the database. No managed services required. Multiple destinations (e.g. `production` and `staging`) can share a single server — each gets its own containers, volumes, and data directories.
 
 ## Architecture
 
-Kamal deploys four containers to a single server by default, all connected over a shared Docker network (`kamal`):
+Kamal deploys four containers per destination, all connected over a shared Docker network (`kamal`):
 
-| Container          | Role                              | Image Source              | Managed as        |
-|--------------------|-----------------------------------|---------------------------|--------------------|
-| `manifold-web`     | Rails API server (primary)        | `manifold/api`            | Server role (web)  |
-| `manifold-worker`  | Background job processor (GoodJob)| `manifold/api`            | Server role (worker)|
-| `manifold-client`  | Client / SSR frontend             | `manifold/client`         | Accessory          |
-| `manifold-db`      | PostgreSQL 15 database            | `postgres:15-alpine`      | Accessory          |
+| Container                      | Role                              | Image Source              | Managed as        |
+|--------------------------------|-----------------------------------|---------------------------|--------------------|
+| `manifold-web-<dest>-<hash>`   | Rails API server (primary)        | `manifold/api`            | Server role (web)  |
+| `manifold-worker-<dest>-<hash>`| Background job processor (GoodJob)| `manifold/api`            | Server role (worker)|
+| `manifold-<dest>-client`       | Client / SSR frontend             | `manifold/client`         | Accessory          |
+| `manifold-<dest>-db`           | PostgreSQL 15 database            | `postgres:15-alpine`      | Accessory          |
 
-The Rails API and worker are **server roles**, which means they share the same Docker image and are deployed together with zero downtime by `kamal deploy`. The client and database run as **accessories**.
+The Rails API and worker are **server roles**, which means they share the same Docker image and are deployed together with zero downtime by `kamal deploy`. The client and database run as **accessories** with per-destination container names so multiple destinations can coexist on one host.
 
 ### Storage
 
-By default, uploaded files are stored on the **local filesystem** (in a bind-mounted volume at `/srv/app/public/system`). This keeps the deployment simple — no S3 or MinIO needed. The client proxies `/system` requests to the API, which serves files via `RAILS_SERVE_STATIC_FILES`.
+By default, uploaded files are stored on the **local filesystem** (in a bind-mounted Docker volume). This keeps the deployment simple — no S3 or MinIO needed. The client proxies `/system` requests to the API, which serves files via `RAILS_SERVE_STATIC_FILES`.
 
-If you prefer S3-compatible object storage, the setup wizard can configure **MinIO** as an additional accessory. When MinIO is enabled, a fifth container (`manifold-storage`) is added and kamal-proxy routes `/manifold-storage/*` requests directly to it.
+If you prefer S3-compatible object storage, the setup wizard can configure **MinIO** as an additional accessory. When MinIO is enabled, a fifth container (`manifold-<dest>-storage`) is added and kamal-proxy routes `/<dest>-storage/*` requests directly to it.
 
 ### Request routing
 
@@ -45,13 +45,13 @@ Internet
 kamal-proxy (:80/:443, Let's Encrypt TLS)
   |
   |-- /api/* -----------------> manifold-web (Rails API, :3011)  [server role]
-  |                              +---> manifold-db (PostgreSQL, :5432)
+  |                              +---> manifold-<dest>-db (PostgreSQL, :5432)
   |
-  +-- /* ---------------------> manifold-client (SSR frontend, :3010)  [accessory]
+  +-- /* ---------------------> manifold-<dest>-client (SSR frontend, :3010)  [accessory]
                                  +---> manifold-web (internal proxy for /system)
 
 manifold-worker (GoodJob)  [server role]
-  +---> manifold-db
+  +---> manifold-<dest>-db
 ```
 
 ## Prerequisites
@@ -104,7 +104,7 @@ This creates two files:
 - `config/deploy.<dest>.yml` — destination config (deep-merges on top of `deploy.yml`)
 - `.kamal/secrets.<dest>` — secrets file
 
-Both are gitignored, so your instance configuration stays out of version control. You can re-run `bin/setup` at any time to regenerate them.
+Both are gitignored, so your instance configuration stays out of version control. You can re-run `bin/setup -d <dest>` at any time to regenerate them (existing secrets are preserved).
 
 ### 3. Deploy
 
@@ -130,7 +130,7 @@ The first deploy takes a few minutes while the database schema is loaded and ini
 bin/remote-admin -d production
 ```
 
-You'll be prompted for an email, name, and password.
+You'll be prompted for an email, first name, and last name. A temporary password will be assigned automatically.
 
 ### 5. Verify
 
@@ -144,7 +144,7 @@ When you want to redeploy after a Manifold update or configuration change:
 kamal deploy -d production
 ```
 
-This does a zero-downtime deploy of the API and worker (both server roles). The `post-deploy` hook automatically reboots the client accessory so it picks up the latest image.
+This does a zero-downtime deploy of the API and worker (both server roles). The `post-deploy` hook automatically restarts the client accessory so it picks up the latest image.
 
 The API container automatically runs migrations and upgrade tasks on startup, so no separate release command is needed.
 
@@ -184,11 +184,11 @@ The `bin/` directory contains helper scripts for common remote operations. All r
 | Script              | Description                                        |
 |---------------------|----------------------------------------------------|
 | `bin/setup`         | Interactive wizard to generate config and secrets  |
-| `bin/remote-admin`  | Create an admin user (prompts for email/name/password) |
-| `bin/remote-status` | Show containers, volumes, images, and disk usage   |
+| `bin/remote-admin`  | Create an admin user (prompts for email/name)      |
+| `bin/remote-status` | Show containers, volumes, and disk usage           |
 | `bin/remote-logs`   | Tail logs from any container                       |
 | `bin/remote`        | Run an arbitrary command on the server via SSH     |
-| `bin/remote-nuke`   | Completely remove a deployment (containers, images, data) |
+| `bin/remote-nuke`   | Completely remove a deployment (containers, volumes, data) |
 
 ### Examples
 
@@ -205,6 +205,9 @@ bin/remote-logs -d production api
 # Tail client logs
 bin/remote-logs -d production client
 
+# Tail worker logs
+bin/remote-logs -d production worker
+
 # Run a command on the server
 bin/remote -d production "docker stats --no-stream"
 
@@ -218,12 +221,14 @@ bin/remote-nuke -d production
 
 ```
 bin/setup                            # Interactive setup wizard
-config/deploy.yml                    # Base config (tracked) -- do not edit
-config/deploy.production.yml         # Your instance overrides (generated by bin/setup)
+bin/remote-*                         # Remote management scripts
+bin/remote-lib.rb                    # Shared helper methods for bin scripts
+config/deploy.yml                    # Base config (tracked) — do not edit
+config/deploy.<dest>.yml             # Your instance overrides (generated by bin/setup)
 config/templates/                    # ERB templates used by bin/setup
-.kamal/secrets.production            # Your secrets (generated by bin/setup)
+.kamal/secrets.<dest>                # Your secrets (generated by bin/setup)
 .kamal/hooks/pre-build               # Builds the client image before each deploy
-.kamal/hooks/post-deploy             # Reboots the client accessory after each deploy
+.kamal/hooks/post-deploy             # Restarts the client accessory after each deploy
 .kamal/hooks/lib/deploy_helpers.rb   # Shared helper methods for hooks
 ```
 
@@ -235,12 +240,13 @@ kamal <command> -d production
 
 ### Destination override file
 
-The destination file (`config/deploy.production.yml`) is generated by `bin/setup` and deep-merges on top of `deploy.yml`. It sets:
+The destination file (`config/deploy.<dest>.yml`) is generated by `bin/setup` and deep-merges on top of `deploy.yml`. It sets:
 
-- **Server IP** -- for the primary service and all accessories
-- **Domain and URLs** -- for the proxy, client env, and API env
-- **Storage configuration** -- local filesystem volumes or MinIO accessory
-- **Architecture** -- if the server is `arm64`
+- **Server IP** — for the primary service and all accessories
+- **Domain and URLs** — for the proxy, client env, and API env
+- **Container naming** — per-destination names (e.g. `manifold-production-db`) so multiple destinations can share a host
+- **Storage configuration** — local filesystem volumes or MinIO accessory
+- **Architecture** — if the server is `arm64`
 
 Everything else (builder config, env var defaults, base accessory definitions, registry settings) is inherited from the base.
 
@@ -256,7 +262,7 @@ builder:
   target: production            # Multi-stage build target
 ```
 
-The client image is built separately by the `.kamal/hooks/pre-build` hook using the same pattern (`manifold/client/Dockerfile`, `production` target). The pre-build hook also pushes the client image to the local registry and pre-pulls it on the server.
+The client image is built separately by the `.kamal/hooks/pre-build` hook using the same pattern (`manifold/client/Dockerfile`, `production` target). The pre-build hook also pushes the client image to the local registry and pre-pulls it on the server so it's available when accessories boot (after the registry tunnel closes).
 
 ### Proxy and routing
 
@@ -267,9 +273,9 @@ kamal-proxy terminates TLS (via Let's Encrypt) and routes by path:
 
 With **local storage**, uploaded assets are served by Rails (via `RAILS_SERVE_STATIC_FILES`) and proxied through the client's `/system` route.
 
-With **MinIO storage**, an additional route sends `/manifold-storage/*` requests directly to MinIO on port 9000.
+With **MinIO storage**, an additional route sends `/manifold-<dest>-storage/*` requests directly to MinIO on port 9000.
 
-### Environment variables -- Client
+### Environment variables — Client
 
 | Variable                       | Value                              | Notes                                      |
 |--------------------------------|------------------------------------|--------------------------------------------|
@@ -280,10 +286,10 @@ With **MinIO storage**, an additional route sends `/manifold-storage/*` requests
 | `CLIENT_URL`                   | `https://your-domain`              | Overridden in destination file             |
 | `CLIENT_BROWSER_API_URL`       | `https://your-domain`              | Overridden in destination file             |
 | `CLIENT_BROWSER_API_CABLE_URL` | `https://your-domain`              | Overridden in destination file             |
-| `CLIENT_SERVER_API_URL`        | `http://manifold-api:3011`         | Internal API URL over Docker network       |
+| `CLIENT_SERVER_API_URL`        | `http://manifold-<dest>-api:3011`  | Internal API URL over Docker network       |
 | `CLIENT_SERVER_PROXIES`        | `true`                             | Client proxies `/system` and `/api/proxy`  |
 
-### Environment variables -- API and Worker
+### Environment variables — API and Worker
 
 | Variable                  | Value                              | Notes                                      |
 |---------------------------|------------------------------------|--------------------------------------------|
@@ -293,36 +299,38 @@ With **MinIO storage**, an additional route sends `/manifold-storage/*` requests
 | `WORKER_COUNT`           | `2`                                 | Puma worker processes (API only)           |
 | `RAILS_MAX_THREADS`      | `20`                                | Threads per Puma worker (API only)         |
 | `MALLOC_ARENA_MAX`       | `2`                                 | Reduces Ruby memory fragmentation          |
-| `RAILS_DB_HOST`          | `manifold-db`                       | Docker network hostname                   |
+| `RAILS_DB_HOST`          | `manifold-<dest>-db`                | Docker network hostname                   |
 | `RAILS_DB_USER`          | `manifold`                          | Matches POSTGRES_USER                      |
 | `RAILS_DB_NAME`          | `manifold_production`               | Primary database                           |
-| `RAILS_CACHE_DB_HOST`    | `manifold-db`                       | Same PostgreSQL instance                   |
+| `RAILS_CACHE_DB_HOST`    | `manifold-<dest>-db`                | Same PostgreSQL instance                   |
 | `RAILS_CACHE_DB_NAME`    | `manifold_cache_production`         | Separate cache database                    |
 | `UPLOAD_CDN_HOST`        | `https://your-domain`               | Public URL for asset downloads             |
-| `PGHOST`                 | `manifold-db`                       | Used by `psql` during schema loading       |
+| `PGHOST`                 | `manifold-<dest>-db`                | Used by `psql` during schema loading       |
 | `PGUSER`                 | `manifold`                          | Used by `psql` during schema loading       |
 | `GOOD_JOB_PROBE_PORT`    | `7001`                              | Health probe port (worker only)            |
 
 The following are added by the setup wizard when **MinIO storage** is selected:
 
-| Variable                                    | Value                          | Notes                     |
-|---------------------------------------------|--------------------------------|---------------------------|
-| `MANIFOLD_SETTINGS_STORAGE_PRIMARY`         | `s3`                           | Switches to S3 backend    |
-| `MANIFOLD_SETTINGS_STORAGE_PRIMARY_PREFIX`  | `store`                        | S3 key prefix             |
-| `MANIFOLD_SETTINGS_STORAGE_CACHE_PREFIX`    | `cache`                        | S3 cache prefix           |
-| `MANIFOLD_SETTINGS_STORAGE_TUS_PREFIX`      | `cache`                        | S3 tus prefix             |
-| `S3_ENDPOINT`                               | `http://manifold-storage:9000` | Internal MinIO URL        |
-| `S3_FORCE_PATH_STYLE`                       | `true`                         | Required for MinIO        |
-| `S3_REGION`                                 | `us-east-1`                    | S3 region                 |
-| `UPLOAD_BUCKET`                             | `manifold-storage`             | MinIO bucket name         |
+| Variable                                    | Value                                     | Notes                     |
+|---------------------------------------------|-------------------------------------------|---------------------------|
+| `MANIFOLD_SETTINGS_STORAGE_PRIMARY`         | `s3`                                      | Switches to S3 backend    |
+| `MANIFOLD_SETTINGS_STORAGE_PRIMARY_PREFIX`  | `store`                                   | S3 key prefix             |
+| `MANIFOLD_SETTINGS_STORAGE_CACHE_PREFIX`    | `cache`                                   | S3 cache prefix           |
+| `MANIFOLD_SETTINGS_STORAGE_TUS_PREFIX`      | `cache`                                   | S3 tus prefix             |
+| `S3_ENDPOINT`                               | `http://manifold-<dest>-storage:9000`     | Internal MinIO URL        |
+| `S3_FORCE_PATH_STYLE`                       | `true`                                    | Required for MinIO        |
+| `S3_REGION`                                 | `us-east-1`                               | S3 region                 |
+| `UPLOAD_BUCKET`                             | `manifold-<dest>-storage`                 | MinIO bucket name         |
+| `UPLOAD_USE_ASSET_CDN`                      | `true`                                    | Use CDN host for asset URLs |
+| `UPLOAD_MAPPED_HOST`                        | `https://your-domain`                     | Maps asset URLs through proxy |
 
 ### Secrets
 
 | Secret                  | Description                                       | Derived from        |
 |-------------------------|---------------------------------------------------|---------------------|
-| `SECRET_KEY_BASE`       | Rails encryption key                              | --                  |
+| `SECRET_KEY_BASE`       | Rails encryption key                              | —                   |
 | `RAILS_SECRET_KEY`      | Manifold secret key (alias)                       | `$SECRET_KEY_BASE`  |
-| `POSTGRES_PASSWORD`     | PostgreSQL password                               | --                  |
+| `POSTGRES_PASSWORD`     | PostgreSQL password                               | —                   |
 | `RAILS_DB_PASS`         | API database password                             | `$POSTGRES_PASSWORD` |
 | `RAILS_CACHE_DB_PASS`   | Cache database password                           | `$POSTGRES_PASSWORD` |
 | `PGPASSWORD`            | Used by `psql` during schema loading              | `$POSTGRES_PASSWORD` |
@@ -332,7 +340,7 @@ The following are added when **MinIO storage** is selected:
 | Secret                  | Description                                       | Derived from           |
 |-------------------------|---------------------------------------------------|------------------------|
 | `MINIO_ROOT_USER`       | MinIO admin username                              | Default: `manifold`    |
-| `MINIO_ROOT_PASSWORD`   | MinIO admin password                              | --                     |
+| `MINIO_ROOT_PASSWORD`   | MinIO admin password                              | —                      |
 | `S3_ACCESS_KEY_ID`      | S3 access key for uploads                         | `$MINIO_ROOT_USER`    |
 | `S3_SECRET_ACCESS_KEY`  | S3 secret key for uploads                         | `$MINIO_ROOT_PASSWORD` |
 
@@ -365,31 +373,42 @@ kamal accessory logs db -d production
 # Run a one-off Rails command
 kamal app exec -d production -r web "bin/rails runner 'puts Manifold::VERSION'"
 
-# Restart a specific accessory
-kamal accessory reboot client -d production
-
 # Stop everything
 kamal app stop -d production
 
-# Remove everything (containers, images, and data)
+# Remove everything (containers, volumes, and data)
 bin/remote-nuke -d production
 ```
 
 ## Data and Backups
 
-Persistent data is stored in bind-mounted directories on the server:
+Persistent data is stored in bind-mounted directories and Docker volumes on the server:
 
-| Data            | Host directory                         | Contents                  |
-|-----------------|----------------------------------------|---------------------------|
-| Database        | `manifold-db/data/`                    | PostgreSQL data files     |
-| Uploads (local) | `manifold-web/uploads/`                | Uploaded files            |
-| Uploads (MinIO) | `manifold-storage/data/`               | MinIO object storage      |
+| Data            | Location                                              | Contents                  |
+|-----------------|-------------------------------------------------------|---------------------------|
+| Database        | `manifold-<dest>-db/data/`                            | PostgreSQL data files     |
+| Uploads (local) | `<dest>-uploads` Docker volume                        | Uploaded files            |
+| Uploads (MinIO) | `manifold-<dest>-storage/data/`                       | MinIO object storage      |
 
 To back up the database:
 
 ```bash
-ssh root@your-server "docker exec manifold-db pg_dump -U manifold manifold_production" > backup.sql
+ssh root@your-server "docker exec manifold-production-db pg_dump -U manifold manifold_production" > backup.sql
 ```
+
+## Multiple Destinations
+
+You can deploy multiple Manifold instances to the same server. Each destination gets its own containers, volumes, and data directories:
+
+```bash
+bin/setup                    # Creates config/deploy.production.yml
+bin/setup -d staging         # Creates config/deploy.staging.yml
+
+kamal setup -d production
+kamal setup -d staging
+```
+
+Containers are named with per-destination prefixes (`manifold-production-db`, `manifold-staging-db`, etc.) so they don't conflict. All destinations share the same kamal-proxy instance and Docker network.
 
 ## Using External Services
 
@@ -424,7 +443,7 @@ ssh root@your-server "docker network inspect kamal"
 ```
 
 **Database connection refused:**
-The `manifold-db` container may not be ready yet. Check its status:
+The database container may not be ready yet. Check its status:
 ```bash
 kamal accessory details db -d production
 kamal accessory logs db -d production
