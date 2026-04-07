@@ -2,7 +2,7 @@
 # Manifold Self-Hosted Deployment Configuration (Kamal 2)
 # =============================================================================
 #
-# Run bin/setup to generate your instance configuration. This base file
+# Run bin/deploy setup to generate your instance configuration. This base file
 # contains defaults shared by all destinations.
 #
 # =============================================================================
