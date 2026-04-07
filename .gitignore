@@ -4,3 +4,5 @@
 config/deploy.*.yml
 .env
 .idea/
+.DS_Store
+
