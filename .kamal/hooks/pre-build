@@ -10,14 +10,27 @@
 # Kamal's local registry SSH tunnel is only active while pulling the primary
 # image. By the time accessories boot, the tunnel is closed. We open our own
 # temporary tunnel to pull the client image.
-#
-# Note: Kamal captures hook stdout/stderr, so output goes to /dev/tty.
 
-require_relative "lib/deploy_helpers"
+require "bundler/setup"
+$stdout.reopen("/dev/tty", "w")
+$stderr.reopen("/dev/tty", "w")
+require_relative "../../lib/manifold/ui"
 
 CLIENT_IMAGE = "localhost:5555/manifold-client"
+REGISTRY_PORT = 5555
 
-# ---------------------------------------------------------------------------
+def server
+  @server ||= ENV.fetch("KAMAL_HOSTS").split(",").first
+end
+
+def run(*cmd)
+  system(*cmd, exception: true)
+end
+
+def image_exists_on_server?(image_ref)
+  system("ssh", "root@#{server}", "docker image inspect #{image_ref}",
+    out: File::NULL, err: File::NULL)
+end
 
 def client_tag
   @client_tag ||= `git -C manifold log -1 --format=%h -- client`.strip
@@ -25,7 +38,7 @@ end
 
 def ensure_latest_tag_on_server
   unless image_exists_on_server?("#{CLIENT_IMAGE}:latest")
-    tty "==> Tagging #{client_tag} as latest on #{server}..."
+    Manifold::UI.step "Tagging #{client_tag} as latest on #{server}..."
     run "ssh", "root@#{server}",
       "docker tag #{CLIENT_IMAGE}:#{client_tag} #{CLIENT_IMAGE}:latest"
   end
@@ -33,12 +46,12 @@ end
 
 def ensure_client_image
   if image_exists_on_server?("#{CLIENT_IMAGE}:#{client_tag}")
-    tty "==> Client image #{client_tag} already exists on #{server}, skipping build."
+    Manifold::UI.step "Client image #{client_tag} already exists on #{server}, skipping build."
     ensure_latest_tag_on_server
     return
   end
 
-  tty "==> Building Manifold client image (#{client_tag})..."
+  Manifold::UI.step "Building Manifold client image (#{client_tag})..."
   run "docker", "build",
     "--progress=plain",
     "--platform", "linux/amd64",
@@ -48,16 +61,16 @@ def ensure_client_image
     "-f", "manifold/client/Dockerfile",
     "manifold/client"
 
-  tty "==> Pushing client image to local registry..."
+  Manifold::UI.step "Pushing client image to local registry..."
   run "docker", "push", "#{CLIENT_IMAGE}:#{client_tag}"
   run "docker", "push", "#{CLIENT_IMAGE}:latest"
 
-  tty "==> Pre-pulling client image on #{server}..."
+  Manifold::UI.step "Pre-pulling client image on #{server}..."
   run "ssh", "-R", "#{REGISTRY_PORT}:localhost:#{REGISTRY_PORT}", "root@#{server}",
     "docker pull #{CLIENT_IMAGE}:#{client_tag} && " \
     "docker tag #{CLIENT_IMAGE}:#{client_tag} #{CLIENT_IMAGE}:latest"
 
-  tty "==> Client image ready."
+  Manifold::UI.step "Client image ready."
 end
 
 # ---------------------------------------------------------------------------

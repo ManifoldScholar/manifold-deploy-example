@@ -10,21 +10,23 @@
 # image from the local registry, but the SSH tunnel is closed by now.
 # Instead, stop/remove the old container directly, then boot via kamal
 # which uses the already-pulled image.
-#
-# Note: Kamal captures hook stdout/stderr, so output goes to /dev/tty.
 
-require_relative "lib/deploy_helpers"
+require "bundler/setup"
+$stdout.reopen("/dev/tty", "w")
+$stderr.reopen("/dev/tty", "w")
+require_relative "../../lib/manifold/ui"
 
+server = ENV.fetch("KAMAL_HOSTS").split(",").first
 dest = ENV["KAMAL_DESTINATION"]
 dest_flag = dest ? ["-d", dest] : []
 container = dest ? "manifold-#{dest}-client" : "manifold-client"
 
-tty "==> Updating client accessory..."
+Manifold::UI.step "Updating client accessory..."
 
-# Stop and remove the old container (if it exists)
-ssh_capture("docker stop #{container} 2>/dev/null; docker rm #{container} 2>/dev/null; true")
+IO.popen(["ssh", "root@#{server}",
+  "docker stop #{container} 2>/dev/null; docker rm #{container} 2>/dev/null; true"],
+  err: File::NULL, &:read)
 
-# Boot the new container using the already-pulled image
-system("kamal", "accessory", "boot", "client", *dest_flag, out: TTY, err: TTY)
+system("kamal", "accessory", "boot", "client", *dest_flag, exception: true)
 
-tty "==> Client accessory updated."
+Manifold::UI.step "Client accessory updated."
