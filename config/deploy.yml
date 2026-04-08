@@ -26,13 +26,10 @@ x-rails-env: &rails-env
   LANG: en_US.UTF8
   MALLOC_ARENA_MAX: "2"
   DOMAIN: *domain
-  RAILS_DB_HOST: manifold-db
   RAILS_DB_USER: manifold
   RAILS_DB_NAME: manifold_production
-  RAILS_CACHE_DB_HOST: manifold-db
   RAILS_CACHE_DB_USER: manifold
-  RAILS_CACHE_DB_NAME: manifold_cache_production
-  PGHOST: manifold-db
+  RAILS_CACHE_DB_NAME: manifold_production_cache
   PGUSER: manifold
 
 x-rails-secrets: &rails-secrets
@@ -118,8 +115,8 @@ aliases:
 
 # -- Accessories --------------------------------------------------------------
 # These services support the primary API application. They share the "kamal"
-# Docker network and reach each other by container name (e.g. manifold-client,
-# manifold-db).
+# Docker network and reach each other by container name (e.g.
+# manifold-<dest>-client, manifold-<dest>-db).
 
 accessories:
   client:

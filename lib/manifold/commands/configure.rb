@@ -34,7 +34,7 @@ module Manifold
 
       def print_intro
         UI.newline
-        UI.header "Manifold Deployment Setup"
+        UI.header "Manifold Deployment Configuration"
         UI.newline
         UI.info "This wizard generates the configuration files needed to deploy Manifold"
         UI.info "to your server. You can re-run it at any time to regenerate them."
