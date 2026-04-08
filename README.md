@@ -1,32 +1,66 @@
 # Manifold Self-Hosted Deployment
 
-Deploy [Manifold](https://github.com/ManifoldScholar/manifold) to your own server using [Kamal 2](https://kamal-deploy.org/).
-
-This repository is a deployment template. It contains:
+This repository is a deployment template for running Manifold on your own server using [Kamal 2](https://kamal-deploy.org/). 
+Kamal is a deployment tool that orchestrates Docker containers on remote servers via SSH, providing zero-downtime 
+deploys, rolling restarts, and accessory service management without requiring Kubernetes or other complex 
+infrastructure. Clone this repository to generate customizable Kamal deploy configuration. It contains:
 
 - A **git submodule** pointing to the Manifold source code (pinned to a specific commit)
-- A **Kamal configuration** that builds Docker images from the submodule and deploys them to a single VM
+- Scripts for generating **Kamal configuration** that builds Docker images from the submodule and deploys them to a single VM
 - A **local Docker registry** on the server, so you don't need a Docker Hub or GHCR account
 
-Everything runs on one machine: the application and the database. No managed services required. Multiple destinations (e.g. `production` and `staging`) can share a single server — each gets its own containers, volumes, and data directories.
+Manifold is a twelve factor application. The source code and service images are immutable — configuration is provided 
+via environment variables, and persistent state is limited to two areas: **asset storage** and the **database**. Asset 
+storage can be handled by the API container's local filesystem (bind-mounted volume), a self-hosted MinIO container 
+(S3-compatible object storage), or an external S3-compatible cloud service (AWS S3, DigitalOcean Spaces, Cloudflare R2, 
+etc.). The database can run as a PostgreSQL container managed by Kamal, or you can connect to an external managed 
+database service
+
+A **destination** is a single deployment instance (e.g. `production`, `staging`). Each destination runs its application 
+containers on a server and can optionally use local or external services for the database and storage. By default, 
+everything runs on one machine with no managed services required. Multiple destinations can share a single server — each 
+gets its own isolated set of containers, volumes, and data directories.
 
 ## Architecture
 
 Kamal deploys containers per destination, all connected over a shared Docker network (`kamal`):
 
-| Container                      | Role                              | Image Source              | Managed as        |
-|--------------------------------|-----------------------------------|---------------------------|--------------------|
-| `manifold-web-<dest>-<hash>`   | Rails API server (primary)        | `manifold/api`            | Server role (web)  |
-| `manifold-worker-<dest>-<hash>`| Background job processor (GoodJob)| `manifold/api`            | Server role (worker)|
-| `manifold-<dest>-client`       | Client / SSR frontend             | `manifold/client`         | Accessory          |
-| `manifold-<dest>-db`           | PostgreSQL 15 database            | `postgres:15-alpine`      | Accessory (local DB only) |
-| `manifold-<dest>-storage`      | MinIO S3-compatible object store  | `minio/minio`             | Accessory (MinIO only) |
+| Container                      | Role                              | Image Source              | Managed as           |
+|--------------------------------|-----------------------------------|---------------------------|----------------------|
+| `manifold-web-<dest>-<hash>`   | Rails API server (primary)        | `manifold/api`            | Server role (web)    |
+| `manifold-worker-<dest>-<hash>`| Background job processor (GoodJob)| `manifold/api`            | Server role (worker) |
+| `manifold-<dest>-client`       | Client / SSR frontend             | `manifold/client`         | Accessory            |
+| `manifold-<dest>-db`           | PostgreSQL 15 database            | `postgres:15-alpine`      | Optional Accessory   |
+| `manifold-<dest>-storage`      | MinIO S3-compatible object store  | `minio/minio`             | Optional Accessory   |
 
-The Rails API and worker are **server roles**, which means they share the same Docker image and are deployed together with zero downtime by `kamal deploy`. The client runs as an **accessory** with per-destination container names so multiple destinations can coexist on one host. When using a local database, a PostgreSQL container is also deployed as an accessory; with an external database, no database container is needed.
+The Rails API and worker are **server roles**, which means they share the same Docker image and are deployed together 
+with zero downtime by `kamal deploy`. The client runs as an **accessory** with per-destination container names so 
+multiple destinations can coexist on one host. When using a local database, a PostgreSQL container is also deployed as 
+an accessory; with an external database, no database container is needed.
+
+While the configuration supports running multiple Manifold instances on a single server (e.g. `production` and `staging` 
+sharing one VM), this is generally not advisable for production deployments due to resource contention and blast radius 
+concerns.
+
+### Database
+
+By default, the database runs as a **local PostgreSQL 15 container** (`manifold-<dest>-db`) deployed as an accessory.
+
+Manifold uses two databases on the same PostgreSQL cluster:
+- **Primary database** (`manifold_production`) — application data
+- **Cache database** (`manifold_production_cache`) — Rails cache store
+
+Both the API and worker containers connect to the database over the Docker network.
+
+Alternatively, you can configure an **external managed database** (e.g. AWS RDS, DigitalOcean Managed PostgreSQL, Azure 
+Database). When using an external database, no PostgreSQL container is deployed. The configure wizard will prompt for 
+connection details and credentials.
 
 ### Storage
 
-By default, uploaded files are stored on the **local filesystem** (in a bind-mounted Docker volume). This keeps the deployment simple — no S3 or MinIO needed. The client proxies `/system` requests to the API, which serves files via `RAILS_SERVE_STATIC_FILES`.
+By default, uploaded files are stored on the **local filesystem** (in a bind-mounted Docker volume). This keeps the 
+deployment simple — no S3 or MinIO needed. The client proxies `/system` requests to the API, which serves files via 
+`RAILS_SERVE_STATIC_FILES`.
 
 If you prefer S3-compatible object storage, the configure wizard offers two options:
 - **MinIO** — a self-hosted S3-compatible server deployed as an additional accessory container (`manifold-<dest>-storage`), with kamal-proxy routing `/<dest>-storage/*` requests directly to it
@@ -41,24 +75,11 @@ kamal-proxy handles incoming HTTPS traffic and routes requests by path:
 
 The client also proxies `/system` (uploaded assets) and `/api/proxy` paths to the API internally.
 
-```
-Internet
-  |
-  v
-kamal-proxy (:80/:443, Let's Encrypt TLS)
-  |
-  |-- /api/* -----------------> manifold-web (Rails API, :3011)  [server role]
-  |                              +---> manifold-<dest>-db (PostgreSQL, :5432)
-  |
-  +-- /* ---------------------> manifold-<dest>-client (SSR frontend, :3010)  [accessory]
-                                 +---> manifold-web (internal proxy for /system)
-
-manifold-worker (GoodJob)  [server role]
-  +---> manifold-<dest>-db
-```
-
 ## Prerequisites
 
+- **Ruby** (3.0 or newer) and **Bundler** installed on your local machine (required for the `bin/deploy` CLI)
+  - Install Ruby via [ruby-lang.org](https://www.ruby-lang.org/en/documentation/installation/) or a version manager like [rbenv](https://github.com/rbenv/rbenv) or [asdf](https://asdf-vm.com/)
+  - Bundler comes with modern Ruby installations, or install with `gem install bundler`
 - **A server** running a supported Linux distribution (Ubuntu 22.04+ recommended) with:
   - At least 4 GB RAM (8 GB recommended)
   - At least 2 vCPUs
@@ -67,7 +88,6 @@ manifold-worker (GoodJob)  [server role]
   - Ports 80 and 443 open to the internet
 - **A domain name** (optional but recommended) with a DNS A record pointing to your server's IP address. Without a domain, the server is accessible via its IP address with SSL disabled.
 - **Docker** installed on your local machine (where you run Kamal from)
-- **Kamal 2** installed locally: `gem install kamal` (requires Ruby) or use the [Docker image](https://kamal-deploy.org/docs/installation/)
 
 ## Quick Start
 
@@ -84,7 +104,17 @@ If you already cloned without `--recurse-submodules`:
 git submodule update --init
 ```
 
-### 2. Configure your deployment
+### 2. Install dependencies
+
+Install the required Ruby gems:
+
+```bash
+bundle install
+```
+
+This installs Kamal 2 and the CLI dependencies needed to run `bin/deploy`.
+
+### 3. Configure your deployment
 
 The configure wizard generates your instance configuration and secrets:
 
@@ -110,7 +140,7 @@ This creates two files:
 
 Both are gitignored, so your instance configuration stays out of version control. You can re-run `bin/deploy configure -d <dest>` at any time to regenerate them (existing secrets are preserved).
 
-### 3. Deploy
+### 4. Deploy
 
 All Kamal commands use `-d <destination>` to select your configuration:
 
@@ -128,7 +158,7 @@ This will:
 
 The first deploy takes a few minutes while the database schema is loaded and initial data is seeded. Subsequent deploys are much faster.
 
-### 4. Create an admin user
+### 5. Create an admin user
 
 ```bash
 bin/deploy admin -d production
@@ -136,7 +166,7 @@ bin/deploy admin -d production
 
 You'll be prompted for an email, first name, and last name. A temporary password will be assigned automatically.
 
-### 5. Verify
+### 6. Verify
 
 Visit `https://your-domain.com` and log in with the admin account you just created.
 
@@ -192,6 +222,7 @@ The `bin/deploy` CLI provides commands for common remote operations. All require
 | `bin/deploy status`    | Show containers, volumes, and disk usage           |
 | `bin/deploy logs`      | Tail logs from any container                       |
 | `bin/deploy remote`    | Run an arbitrary command on the server via SSH     |
+| `bin/deploy import`    | Import a v8 backup tar into a destination (replaces DB and files) |
 | `bin/deploy nuke`      | Completely remove a deployment (containers, volumes, data) |
 
 Run `bin/deploy --help` for a list of all commands, or `bin/deploy <command> --help` for usage details.
@@ -216,6 +247,9 @@ bin/deploy logs -d production worker
 
 # Run a command on the server
 bin/deploy remote -d production "docker stats --no-stream"
+
+# Import a v8 backup tar into an existing destination
+bin/deploy import -d production ./manifold-backup-YYYY-MM-DD.tar
 
 # Completely remove a deployment and start over
 bin/deploy nuke -d production
@@ -426,6 +460,27 @@ To back up a **local** database (external databases should be backed up via your
 ```bash
 ssh root@your-server "docker exec manifold-production-db pg_dump -U manifold manifold_production" > backup.sql
 ```
+
+### Importing a v8 backup
+
+If you are migrating from a legacy (v8 or earlier) Manifold installation, you can import the `.tar` backup produced by the old `manifold:backup` task directly into a configured destination:
+
+```bash
+bin/deploy import -d production ./manifold-backup-YYYY-MM-DD.tar
+```
+
+The tar archive must contain `dump.sql` and an `uploads/` directory at the root (the standard v8 backup layout). The import command will:
+
+1. Upload the tar to a staging directory on the server and extract it.
+2. Stop the web and worker containers (accessories like `db` and `client` keep running).
+3. Drop and recreate the primary and cache databases, then load `dump.sql` into the primary database.
+4. Replace uploaded files in the destination's storage backend (local volume, MinIO accessory, or external S3) with the contents of `uploads/`.
+5. Boot the app. On startup, Rails runs pending migrations and `manifold:upgrade` to bring the schema and data up to date with the current (v9+) codebase.
+6. Reindex search.
+
+This **replaces** all database and file data for the destination — you will be asked to type `yes` to confirm before anything destructive runs. Run `bin/deploy configure -d <dest>` first if you have not yet configured the destination.
+
+Only v8 **filesystem** backups are supported as a source. If your v8 instance was already using S3 storage, copy the bucket contents directly to your new bucket instead.
 
 ## Multiple Destinations
 

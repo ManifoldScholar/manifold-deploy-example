@@ -6,6 +6,7 @@ require_relative "commands/logs"
 require_relative "commands/admin"
 require_relative "commands/nuke"
 require_relative "commands/remote"
+require_relative "commands/import"
 
 module Manifold
   module CLI
@@ -17,5 +18,6 @@ module Manifold
     register "admin",     Commands::Admin
     register "nuke",      Commands::Nuke
     register "remote",    Commands::Remote
+    register "import",    Commands::Import
   end
 end

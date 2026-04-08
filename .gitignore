@@ -1,3 +1,4 @@
+manifold-backup*
 .kamal/secrets
 .kamal/secrets.*
 !.kamal/secrets-example
