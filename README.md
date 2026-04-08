@@ -12,22 +12,24 @@ Everything runs on one machine: the application and the database. No managed ser
 
 ## Architecture
 
-Kamal deploys four containers per destination, all connected over a shared Docker network (`kamal`):
+Kamal deploys containers per destination, all connected over a shared Docker network (`kamal`):
 
 | Container                      | Role                              | Image Source              | Managed as        |
 |--------------------------------|-----------------------------------|---------------------------|--------------------|
 | `manifold-web-<dest>-<hash>`   | Rails API server (primary)        | `manifold/api`            | Server role (web)  |
 | `manifold-worker-<dest>-<hash>`| Background job processor (GoodJob)| `manifold/api`            | Server role (worker)|
 | `manifold-<dest>-client`       | Client / SSR frontend             | `manifold/client`         | Accessory          |
-| `manifold-<dest>-db`           | PostgreSQL 15 database            | `postgres:15-alpine`      | Accessory          |
+| `manifold-<dest>-db`           | PostgreSQL 15 database            | `postgres:15-alpine`      | Accessory (local DB only) |
 
-The Rails API and worker are **server roles**, which means they share the same Docker image and are deployed together with zero downtime by `kamal deploy`. The client and database run as **accessories** with per-destination container names so multiple destinations can coexist on one host.
+The Rails API and worker are **server roles**, which means they share the same Docker image and are deployed together with zero downtime by `kamal deploy`. The client runs as an **accessory** with per-destination container names so multiple destinations can coexist on one host. When using a local database, a PostgreSQL container is also deployed as an accessory; with an external database, no database container is needed.
 
 ### Storage
 
 By default, uploaded files are stored on the **local filesystem** (in a bind-mounted Docker volume). This keeps the deployment simple — no S3 or MinIO needed. The client proxies `/system` requests to the API, which serves files via `RAILS_SERVE_STATIC_FILES`.
 
-If you prefer S3-compatible object storage, the setup wizard can configure **MinIO** as an additional accessory. When MinIO is enabled, a fifth container (`manifold-<dest>-storage`) is added and kamal-proxy routes `/<dest>-storage/*` requests directly to it.
+If you prefer S3-compatible object storage, the configure wizard offers two options:
+- **MinIO** — a self-hosted S3-compatible server deployed as an additional accessory container (`manifold-<dest>-storage`), with kamal-proxy routing `/<dest>-storage/*` requests directly to it
+- **S3** — an external S3-compatible service (AWS S3, DigitalOcean Spaces, Cloudflare R2, etc.) with no additional containers needed
 
 ### Request routing
 
@@ -81,12 +83,12 @@ If you already cloned without `--recurse-submodules`:
 git submodule update --init
 ```
 
-### 2. Run the setup wizard
+### 2. Configure your deployment
 
-The setup wizard generates your instance configuration and secrets:
+The configure wizard generates your instance configuration and secrets:
 
 ```bash
-bin/deploy setup
+bin/deploy configure
 ```
 
 It will prompt you for:
@@ -97,14 +99,15 @@ It will prompt you for:
 | Server IP address | (required) | Your server's public IPv4 address |
 | Domain name | (blank = use IP) | If blank, SSL is disabled |
 | Server architecture | `amd64` | `amd64` or `arm64` |
-| Storage backend | `local` | `local` (filesystem) or `minio` (S3-compatible) |
+| Database | `local` | `local` (container) or `external` (managed) |
+| Storage backend | `local` | `local` (filesystem), `minio` (self-hosted), or `s3` (external) |
 | Auto-generate secrets | `y` | Generates random keys and passwords |
 
 This creates two files:
 - `config/deploy.<dest>.yml` — destination config (deep-merges on top of `deploy.yml`)
 - `.kamal/secrets.<dest>` — secrets file
 
-Both are gitignored, so your instance configuration stays out of version control. You can re-run `bin/deploy setup -d <dest>` at any time to regenerate them (existing secrets are preserved).
+Both are gitignored, so your instance configuration stays out of version control. You can re-run `bin/deploy configure -d <dest>` at any time to regenerate them (existing secrets are preserved).
 
 ### 3. Deploy
 
@@ -183,7 +186,7 @@ The `bin/deploy` CLI provides commands for common remote operations. All require
 
 | Command                | Description                                        |
 |------------------------|----------------------------------------------------|
-| `bin/deploy setup`     | Interactive wizard to generate config and secrets  |
+| `bin/deploy configure`     | Interactive wizard to generate config and secrets  |
 | `bin/deploy admin`     | Create an admin user (prompts for email/name)      |
 | `bin/deploy status`    | Show containers, volumes, and disk usage           |
 | `bin/deploy logs`      | Tail logs from any container                       |
@@ -226,8 +229,8 @@ Gemfile                              # Ruby dependencies (dry-cli, tty-prompt, l
 bin/deploy                           # CLI entrypoint — run bin/deploy --help
 lib/manifold/                        # CLI library code (commands, config, UI, templates)
 config/deploy.yml                    # Base config (tracked) — do not edit
-config/deploy.<dest>.yml             # Your instance overrides (generated by bin/deploy setup)
-.kamal/secrets.<dest>                # Your secrets (generated by bin/deploy setup)
+config/deploy.<dest>.yml             # Your instance overrides (generated by bin/deploy configure)
+.kamal/secrets.<dest>                # Your secrets (generated by bin/deploy configure)
 .kamal/hooks/pre-build               # Builds the client image before each deploy
 .kamal/hooks/post-deploy             # Restarts the client accessory after each deploy
 ```
@@ -240,7 +243,7 @@ kamal <command> -d production
 
 ### Destination override file
 
-The destination file (`config/deploy.<dest>.yml`) is generated by `bin/deploy setup` and deep-merges on top of `deploy.yml`. It sets:
+The destination file (`config/deploy.<dest>.yml`) is generated by `bin/deploy configure` and deep-merges on top of `deploy.yml`. It sets:
 
 - **Server IP** — for the primary service and all accessories
 - **Domain and URLs** — for the proxy, client env, and API env
@@ -299,17 +302,17 @@ With **MinIO storage**, an additional route sends `/manifold-<dest>-storage/*` r
 | `WORKER_COUNT`           | `2`                                 | Puma worker processes (API only)           |
 | `RAILS_MAX_THREADS`      | `20`                                | Threads per Puma worker (API only)         |
 | `MALLOC_ARENA_MAX`       | `2`                                 | Reduces Ruby memory fragmentation          |
-| `RAILS_DB_HOST`          | `manifold-<dest>-db`                | Docker network hostname                   |
+| `RAILS_DB_HOST`          | `manifold-<dest>-db` or external host | Docker hostname (local) or managed host (external) |
 | `RAILS_DB_USER`          | `manifold`                          | Matches POSTGRES_USER                      |
 | `RAILS_DB_NAME`          | `manifold_production`               | Primary database                           |
-| `RAILS_CACHE_DB_HOST`    | `manifold-<dest>-db`                | Same PostgreSQL instance                   |
+| `RAILS_CACHE_DB_HOST`    | `manifold-<dest>-db` or external host | Same PostgreSQL instance                 |
 | `RAILS_CACHE_DB_NAME`    | `manifold_cache_production`         | Separate cache database                    |
 | `UPLOAD_CDN_HOST`        | `https://your-domain`               | Public URL for asset downloads             |
 | `PGHOST`                 | `manifold-<dest>-db`                | Used by `psql` during schema loading       |
 | `PGUSER`                 | `manifold`                          | Used by `psql` during schema loading       |
 | `GOOD_JOB_PROBE_PORT`    | `7001`                              | Health probe port (worker only)            |
 
-The following are added by the setup wizard when **MinIO storage** is selected:
+The following are added by the configure wizard when **MinIO** or **S3** storage is selected:
 
 | Variable                                    | Value                                     | Notes                     |
 |---------------------------------------------|-------------------------------------------|---------------------------|
@@ -317,10 +320,10 @@ The following are added by the setup wizard when **MinIO storage** is selected:
 | `MANIFOLD_SETTINGS_STORAGE_PRIMARY_PREFIX`  | `store`                                   | S3 key prefix             |
 | `MANIFOLD_SETTINGS_STORAGE_CACHE_PREFIX`    | `cache`                                   | S3 cache prefix           |
 | `MANIFOLD_SETTINGS_STORAGE_TUS_PREFIX`      | `cache`                                   | S3 tus prefix             |
-| `S3_ENDPOINT`                               | `http://manifold-<dest>-storage:9000`     | Internal MinIO URL        |
-| `S3_FORCE_PATH_STYLE`                       | `true`                                    | Required for MinIO        |
+| `S3_ENDPOINT`                               | Internal MinIO URL or external S3 URL     | Depends on storage type   |
+| `S3_FORCE_PATH_STYLE`                       | `true`                                    | `false` for AWS S3        |
 | `S3_REGION`                                 | `us-east-1`                               | S3 region                 |
-| `UPLOAD_BUCKET`                             | `manifold-<dest>-storage`                 | MinIO bucket name         |
+| `UPLOAD_BUCKET`                             | Bucket name                               | MinIO or S3 bucket        |
 | `UPLOAD_USE_ASSET_CDN`                      | `true`                                    | Use CDN host for asset URLs |
 | `UPLOAD_MAPPED_HOST`                        | `https://your-domain`                     | Maps asset URLs through proxy |
 
@@ -330,10 +333,23 @@ The following are added by the setup wizard when **MinIO storage** is selected:
 |-------------------------|---------------------------------------------------|---------------------|
 | `SECRET_KEY_BASE`       | Rails encryption key                              | —                   |
 | `RAILS_SECRET_KEY`      | Manifold secret key (alias)                       | `$SECRET_KEY_BASE`  |
-| `POSTGRES_PASSWORD`     | PostgreSQL password                               | —                   |
+
+The following are added when **local database** is selected (default):
+
+| Secret                  | Description                                       | Derived from        |
+|-------------------------|---------------------------------------------------|---------------------|
+| `POSTGRES_PASSWORD`     | PostgreSQL container password                     | —                   |
 | `RAILS_DB_PASS`         | API database password                             | `$POSTGRES_PASSWORD` |
 | `RAILS_CACHE_DB_PASS`   | Cache database password                           | `$POSTGRES_PASSWORD` |
 | `PGPASSWORD`            | Used by `psql` during schema loading              | `$POSTGRES_PASSWORD` |
+
+The following are added when **external database** is selected:
+
+| Secret                  | Description                                       | Derived from        |
+|-------------------------|---------------------------------------------------|---------------------|
+| `RAILS_DB_PASS`         | Database password (prompted during setup)          | —                   |
+| `RAILS_CACHE_DB_PASS`   | Cache database password                           | `$RAILS_DB_PASS`   |
+| `PGPASSWORD`            | Used by `psql` during schema loading              | `$RAILS_DB_PASS`   |
 
 The following are added when **MinIO storage** is selected:
 
@@ -343,6 +359,13 @@ The following are added when **MinIO storage** is selected:
 | `MINIO_ROOT_PASSWORD`   | MinIO admin password                              | —                      |
 | `S3_ACCESS_KEY_ID`      | S3 access key for uploads                         | `$MINIO_ROOT_USER`    |
 | `S3_SECRET_ACCESS_KEY`  | S3 secret key for uploads                         | `$MINIO_ROOT_PASSWORD` |
+
+The following are added when **external S3 storage** is selected:
+
+| Secret                  | Description                                       | Derived from           |
+|-------------------------|---------------------------------------------------|------------------------|
+| `S3_ACCESS_KEY_ID`      | S3 access key (prompted during setup)              | —                      |
+| `S3_SECRET_ACCESS_KEY`  | S3 secret key (prompted during setup)              | —                      |
 
 ## Useful Commands
 
@@ -401,8 +424,8 @@ ssh root@your-server "docker exec manifold-production-db pg_dump -U manifold man
 You can deploy multiple Manifold instances to the same server. Each destination gets its own containers, volumes, and data directories:
 
 ```bash
-bin/deploy setup                    # Creates config/deploy.production.yml
-bin/deploy setup -d staging         # Creates config/deploy.staging.yml
+bin/deploy configure                    # Creates config/deploy.production.yml
+bin/deploy configure -d staging         # Creates config/deploy.staging.yml
 
 kamal setup -d production
 kamal setup -d staging
@@ -412,21 +435,22 @@ Containers are named with per-destination prefixes (`manifold-production-db`, `m
 
 ## Using External Services
 
-The default configuration runs PostgreSQL as a Docker container on the server. If you prefer managed services:
+The configure wizard (`bin/deploy configure`) natively supports both external databases and external S3 storage. Select `external` for the database prompt or `s3` for the storage prompt, and the wizard will collect the necessary connection details and credentials.
 
-**For an external database**, override the `RAILS_DB_*` and `RAILS_CACHE_DB_*` variables in your destination file to point to your managed database. Alternatively, you can replace all the individual database variables with `DATABASE_URL` and `CACHE_DATABASE_URL` (Rails connection strings).
+**External database**: When you select `external`, the wizard prompts for host, port, user, and database name. No PostgreSQL container is deployed. The database password is stored in your secrets file.
 
-**For external S3-compatible storage** (e.g. DigitalOcean Spaces, AWS S3), add the S3 environment variables to your destination file:
-```yaml
-env:
-  clear:
-    MANIFOLD_SETTINGS_STORAGE_PRIMARY: s3
-    S3_ENDPOINT: "https://nyc3.digitaloceanspaces.com"  # or your provider's endpoint
-    S3_REGION: "us-east-1"                                # your bucket's region
-    S3_FORCE_PATH_STYLE: "true"                           # may need to be "false" for AWS S3
-    UPLOAD_BUCKET: "your-bucket-name"
+**Important**: The deploy does not create external databases. Rails bootstraps a new database by connecting to a `postgres` maintenance database, which is not always present on managed services — for example, DigitalOcean Managed PostgreSQL ships with `defaultdb` instead of `postgres`, and `rails db:create` will fail with `FATAL: database "postgres" does not exist`. Create both the primary database and its matching cache database on your cluster before your first deploy (e.g. via your provider's control panel or a `psql` session):
+
+```sql
+CREATE DATABASE manifold_production;
+CREATE DATABASE manifold_production_cache;
 ```
-And set `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` in your secrets file to your provider's credentials.
+
+The cache database is expected to be named `<db_name>_cache`.
+
+**External S3 storage** (e.g. DigitalOcean Spaces, AWS S3, Cloudflare R2): When you select `s3`, the wizard prompts for endpoint URL, region, bucket name, and access credentials. No MinIO container is deployed.
+
+You can also switch an existing destination between local and external by re-running `bin/deploy configure -d <dest>` — existing secrets are preserved and new ones are prompted as needed.
 
 ## Troubleshooting
 
