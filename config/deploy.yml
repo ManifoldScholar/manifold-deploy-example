@@ -2,7 +2,7 @@
 # Manifold Self-Hosted Deployment Configuration (Kamal 2)
 # =============================================================================
 #
-# Run bin/deploy setup to generate your instance configuration. This base file
+# Run bin/deploy configure to generate your instance configuration. This base file
 # contains defaults shared by all destinations.
 #
 # =============================================================================
@@ -84,7 +84,6 @@ env:
     <<: *rails-env
     RAILS_SERVE_STATIC_FILES: "true"
     CLIENT_BROWSER_API_URL: *client-url
-    UPLOAD_CDN_HOST: *client-url
     API_PORT: "3011"
     WORKER_COUNT: "2"
     RAILS_MAX_THREADS: "20"
@@ -123,20 +122,6 @@ aliases:
 # manifold-db).
 
 accessories:
-  db:
-    image: postgres:15-alpine
-    host: *server-ip
-    env:
-      clear:
-        POSTGRES_USER: manifold
-        POSTGRES_DB: manifold_production
-      secret:
-        - POSTGRES_PASSWORD
-    directories:
-      - data:/var/lib/postgresql/data
-    options:
-      shm-size: 2g
-
   client:
     image: localhost:5555/manifold-client:latest
     host: *server-ip

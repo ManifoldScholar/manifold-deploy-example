@@ -46,11 +46,10 @@ module Manifold
       (base["accessories"] || {}).merge(dest_config["accessories"] || {})
     end
 
-    # Parse the "# bin/deploy setup: key=val" comment from a deploy config file.
-    # Also supports legacy "# bin/setup: key=val" format.
+    # Parse the "# bin/deploy configure: key=val" comment from a deploy config file.
     def read_saved_settings(dest)
       File.foreach(deploy_file(dest)) do |line|
-        if line =~ /^# bin\/(?:deploy setup|setup): (.+)$/
+        if line =~ /^# bin\/deploy configure: (.+)$/
           pairs = $1.strip.split(/\s+/)
           return pairs.each_with_object({}) do |pair, h|
             k, v = pair.split("=", 2)
@@ -70,7 +69,7 @@ module Manifold
       File.foreach(file) do |line|
         line = line.strip
         next if line.empty? || line.start_with?("#")
-        if line =~ /\A([A-Z_]+)=(.+)\z/
+        if line =~ /\A([A-Z0-9_]+)=(.+)\z/
           key, val = $1, $2
           secrets[key] = val unless val.start_with?("$")
         end
