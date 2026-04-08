@@ -30,6 +30,7 @@ module Manifold
         restore_database
         restore_files
         start_app
+        wait_for_web_ready
         reindex
         cleanup_staging
         print_summary
@@ -135,6 +136,33 @@ module Manifold
           name = find_app_container(role)
           abort_with "No #{role} container found for '#{@dest}'" unless name
           ssh_or_abort!("docker start #{name}")
+        end
+      end
+
+      # The web container's cmd runs `bin/ensure-db && manifold:upgrade && puma`.
+      # `docker start` returns immediately, so execing reindex right after can
+      # race with pending migrations (e.g. pg_search_documents may not exist
+      # yet). Puma binds its port only after migrations + upgrade finish, so
+      # wait until the port is open inside the container.
+      def wait_for_web_ready
+        UI.step "Waiting for web container to finish booting..."
+        web = find_app_container("web")
+        abort_with "Web container not found" unless web
+
+        check = %q(ruby -e "require 'socket'; TCPSocket.new('localhost', 3011).close")
+        script = <<~BASH
+          for i in $(seq 1 120); do
+            if docker exec #{web} #{check} >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+        BASH
+
+        unless ssh_run(@host, @ssh_user, script)
+          abort_with "Web container did not finish booting within 10 minutes. " \
+                     "Check logs with: bin/deploy logs api -d #{@dest}"
         end
       end
 
@@ -272,6 +300,15 @@ module Manifold
         endpoint, key, secret = s3_connection
         bucket = s3_bucket
 
+        # Wipe store/ and cache/ before mirroring. mc mirror skips files
+        # that match by size/hash, which means a second import would leave
+        # stale objects (with stale ACLs) untouched. Import semantics are
+        # "replace everything", matching restore_local_files.
+        #
+        # DO Spaces (and most S3-compatible services) don't honor bucket
+        # policies set via PutBucketPolicy, so we make uploaded objects
+        # publicly readable via per-object ACL instead. Only store/ is
+        # public; cache/ is Shrine's intermediate/temp storage.
         ssh_or_abort! <<~BASH
           docker run --rm --network kamal \
             --entrypoint sh \
@@ -281,9 +318,11 @@ module Manifold
             minio/mc:latest -c '
               set -e
               mc alias set dst #{endpoint} "$MC_AK" "$MC_SK"
-              mc mirror --overwrite --exclude "cache/**" /src dst/#{bucket}/store/
+              mc rm --recursive --force dst/#{bucket}/store/ >/dev/null 2>&1 || true
+              mc rm --recursive --force dst/#{bucket}/cache/ >/dev/null 2>&1 || true
+              mc mirror --attr "X-Amz-Acl=public-read" --exclude "cache/**" /src dst/#{bucket}/store/
               if [ -d /src/cache ] && [ "$(ls -A /src/cache 2>/dev/null)" ]; then
-                mc mirror --overwrite /src/cache dst/#{bucket}/cache/
+                mc mirror /src/cache dst/#{bucket}/cache/
               fi
             '
         BASH
