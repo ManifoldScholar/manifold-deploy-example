@@ -463,7 +463,7 @@ ssh root@your-server "docker exec manifold-production-db pg_dump -U manifold man
 
 ### Importing a v8 backup
 
-If you are migrating from a legacy (v8 or earlier) Manifold installation, you can import the `.tar` backup produced by the old `manifold:backup` task directly into a configured destination:
+If you are migrating from a legacy (v8 or earlier) Manifold installation, you can import the `.tar` backup produced by the [documented Manifold backup approach](https://manifoldscholar.github.io/manifold-docusaurus/docs/administering/backup_restore):
 
 ```bash
 bin/deploy import -d production ./manifold-backup-YYYY-MM-DD.tar
