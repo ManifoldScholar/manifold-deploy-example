@@ -1,4 +1,4 @@
 [submodule "manifold"]
 	path = manifold
-	url = git@github.com:ManifoldScholar/manifold.git
+	url = https://github.com/ManifoldScholar/manifold.git
 	branch = main
