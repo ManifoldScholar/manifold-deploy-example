@@ -94,7 +94,7 @@ The client also proxies `/system` (uploaded assets) and `/api/proxy` paths to th
 ### 1. Clone this repository
 
 ```bash
-git clone --recurse-submodules https://github.com/YOUR_ORG/manifold-deploy-example.git
+git clone --recurse-submodules https://github.com/ManifoldScholar/manifold-deploy-example.git
 cd manifold-deploy-example
 ```
 
