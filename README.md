@@ -84,7 +84,7 @@ The client also proxies `/system` (uploaded assets) and `/api/proxy` paths to th
   - At least 4 GB RAM (8 GB recommended)
   - At least 2 vCPUs
   - At least 40 GB SSD storage
-  - SSH access as root (or a user with Docker permissions)
+  - SSH access as `root`, **or** a non-root user set up for Docker (see [Deploying as a non-root user](#deploying-as-a-non-root-user))
   - Ports 80 and 443 open to the internet
 - **A domain name** (optional but recommended) with a DNS A record pointing to your server's IP address. Without a domain, the server is accessible via its IP address with SSL disabled.
 - **Docker** installed on your local machine (where you run Kamal from)
@@ -169,6 +169,36 @@ You'll be prompted for an email, first name, and last name. A temporary password
 ### 6. Verify
 
 Visit `https://your-domain.com` and log in with the admin account you just created.
+
+## Deploying as a non-root user
+
+By default this template connects as `root` (`ssh.user: root` in
+`config/deploy.yml`). To deploy as a regular user instead, set the SSH user in
+`config/deploy.yml`:
+
+```yaml
+ssh:
+  user: deploy
+```
+
+> Set this in `config/deploy.yml`, not in a destination file. The destination
+> file (`config/deploy.<dest>.yml`) is regenerated every time you run
+> `bin/deploy configure`, which would discard an `ssh:` block added there.
+
+For this to work, on the server:
+
+- **Docker must already be installed.** When Docker exists, Kamal runs every
+  command directly as your SSH user and never needs `sudo`. (If you let Kamal
+  install Docker during `kamal setup`, the user instead needs passwordless
+  `sudo` — provisioning that is outside the scope of this guide.)
+- **The user must be in the `docker` group** so it can run Docker without
+  `sudo`. Verify with `docker ps` over an SSH session as that user.
+
+> **Security note:** the `docker` group is root-equivalent — any member can
+> start a container that mounts the host filesystem as root. Using a non-root
+> SSH user keeps you from operating as root directly, but it is not a
+> meaningful privilege reduction on its own. Treat docker-group access as you
+> would root.
 
 ## Routine Deployments
 
@@ -458,7 +488,7 @@ Persistent data lives on the server only when the corresponding service runs loc
 To back up a **local** database (external databases should be backed up via your provider's tooling):
 
 ```bash
-ssh root@your-server "docker exec manifold-production-db pg_dump -U manifold manifold_production" > backup.sql
+ssh <user>@your-server "docker exec manifold-production-db pg_dump -U manifold manifold_production" > backup.sql
 ```
 
 ### Importing a v8 backup
@@ -526,7 +556,7 @@ Ensure your domain's DNS A record points to the server IP and ports 80/443 are o
 **Client can't reach the API (`CLIENT_SERVER_API_URL`):**
 All containers must be on the `kamal` Docker network. Verify with:
 ```bash
-ssh root@your-server "docker network inspect kamal"
+ssh <user>@your-server "docker network inspect kamal"
 ```
 
 **Database connection refused:**
