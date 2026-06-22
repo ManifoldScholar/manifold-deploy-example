@@ -15,9 +15,9 @@ module Manifold
 
         resolve = case container
         when "api", "web"
-          "docker ps --filter label=service=manifold --filter label=destination=#{dest} --filter label=role=web --format '{{.Names}}' | head -1"
+          "docker ps --filter label=service=manifold-api --filter label=destination=#{dest} --filter label=role=web --format '{{.Names}}' | head -1"
         when "worker"
-          "docker ps --filter label=service=manifold --filter label=destination=#{dest} --filter label=role=worker --format '{{.Names}}' | head -1"
+          "docker ps --filter label=service=manifold-api --filter label=destination=#{dest} --filter label=role=worker --format '{{.Names}}' | head -1"
         when "client"  then "echo #{prefix}-client"
         when "db"      then "echo #{prefix}-db"
         when "storage" then "echo #{prefix}-storage"

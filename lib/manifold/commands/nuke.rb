@@ -44,7 +44,7 @@ module Manifold
           UI.step "Kamal cleanup incomplete, removing remaining containers directly..."
           system("ssh", "#{ssh_user}@#{host}",
             "docker rm -f #{containers.join(' ')} 2>/dev/null; " \
-            "docker container prune -f --filter label=service=manifold --filter label=destination=#{dest} 2>/dev/null; " \
+            "docker container prune -f --filter label=service=manifold-api --filter label=destination=#{dest} 2>/dev/null; " \
             "true"
           )
         end
@@ -68,7 +68,7 @@ module Manifold
         if remaining.empty?
           UI.step "Destination '#{dest}' removed."
           UI.newline
-          UI.info "To redeploy: kamal setup -d #{dest}"
+          UI.info "To redeploy: bin/deploy setup -d #{dest}"
         else
           UI.warn "Some containers remain:"
           puts remaining

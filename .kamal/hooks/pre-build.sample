@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+#
+# OPTIONAL pre-build hook — for the "Deploy from source" workflow only.
+#
+# By default Manifold pulls pre-built images from ghcr.io and NO build happens,
+# so this hook is shipped dormant (.sample) and Kamal ignores it. Activate it
+# only if you build from source and push to your OWN container registry:
+#
+#   cp .kamal/hooks/pre-build.sample .kamal/hooks/pre-build
+#   chmod +x .kamal/hooks/pre-build
+#
+# Kamal builds the API image for you (the `builder` block in deploy.yml). The
+# client is an accessory, so Kamal does NOT build it — this hook builds the
+# client image and pushes it to your registry so the client accessory can pull
+# it like any other image. See the README, "Deploy from source".
+#
+# Set CLIENT_IMAGE to match `accessories.client.image` in your config (without
+# the tag). Requires Docker locally and push access to that registry.
+
+require "bundler/setup"
+$stdout.reopen("/dev/tty", "w")
+$stderr.reopen("/dev/tty", "w")
+require_relative "../../lib/manifold/ui"
+
+CLIENT_IMAGE = ENV.fetch("MANIFOLD_CLIENT_IMAGE", "ghcr.io/your-org/manifold-client")
+TAG = `git -C manifold log -1 --format=%h -- client`.strip
+
+def run(*cmd)
+  system(*cmd, exception: true)
+end
+
+Manifold::UI.step "Building client image #{CLIENT_IMAGE}:#{TAG}..."
+run "docker", "build",
+  "--platform", "linux/amd64",
+  "-t", "#{CLIENT_IMAGE}:#{TAG}",
+  "-t", "#{CLIENT_IMAGE}:latest",
+  "--target", "production",
+  "-f", "manifold/client/Dockerfile",
+  "manifold/client"
+
+Manifold::UI.step "Pushing client image to #{CLIENT_IMAGE}..."
+run "docker", "push", "#{CLIENT_IMAGE}:#{TAG}"
+run "docker", "push", "#{CLIENT_IMAGE}:latest"
+
+Manifold::UI.step "Client image pushed. Deploy WITHOUT --skip-push to build and push the API."

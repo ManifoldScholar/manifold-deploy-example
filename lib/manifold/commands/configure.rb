@@ -99,6 +99,12 @@ module Manifold
       end
 
       def resolve_secrets
+        # Registry credentials: pulling the published images requires a GitHub
+        # username and a read:packages PAT (Kamal logs in even for public
+        # images). See the README, "Registry access".
+        fill_secret :github_username, "GitHub username (for ghcr.io image pulls)"
+        fill_secret :registry_pat,    "GitHub read:packages token (PAT)", mask: true
+
         fill_secret :secret_key_base,      "SECRET_KEY_BASE",      generator: :hex
         fill_secret :postgres_password,    "POSTGRES_PASSWORD",    generator: :password if @settings.local_database?
         fill_secret :db_password,          "Database password"                          if @settings.external_database?
@@ -107,9 +113,16 @@ module Manifold
         fill_secret :s3_secret_access_key, "S3 secret access key"                       if @settings.s3_storage?
       end
 
-      def fill_secret(field, label, generator: nil)
+      def fill_secret(field, label, generator: nil, mask: false)
         return unless blank?(@settings.public_send(field))
-        value = generator && auto_generate? ? generate(generator) : prompt.ask("#{label}:", required: true)
+        value =
+          if generator && auto_generate?
+            generate(generator)
+          elsif mask
+            prompt.mask("#{label}:", required: true)
+          else
+            prompt.ask("#{label}:", required: true)
+          end
         @settings.public_send("#{field}=", value)
       end
 
@@ -192,7 +205,7 @@ module Manifold
           UI.info "No database container will be deployed."
           UI.newline
           UI.warn "IMPORTANT: External databases are not created by the deploy."
-          UI.warn "Create these on your cluster before running kamal deploy:"
+          UI.warn "Create these on your cluster before running bin/deploy setup:"
           UI.info "  CREATE DATABASE #{@settings.db_name};"
           UI.info "  CREATE DATABASE #{@settings.db_name}_cache;"
         else
@@ -214,7 +227,7 @@ module Manifold
 
         UI.newline
         UI.step "Next steps:"
-        UI.info "  kamal setup -d #{@settings.dest}"
+        UI.info "  bin/deploy setup -d #{@settings.dest}"
         UI.newline
       end
 

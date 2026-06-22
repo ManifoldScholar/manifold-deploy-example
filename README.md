@@ -5,9 +5,8 @@ Kamal is a deployment tool that orchestrates Docker containers on remote servers
 deploys, rolling restarts, and accessory service management without requiring Kubernetes or other complex 
 infrastructure. Clone this repository to generate customizable Kamal deploy configuration. It contains:
 
-- A **git submodule** pointing to the Manifold source code (pinned to a specific commit)
-- Scripts for generating **Kamal configuration** that builds Docker images from the submodule and deploys them to a single VM
-- A **local Docker registry** on the server, so you don't need a Docker Hub or GHCR account
+- Scripts for generating **Kamal configuration** that deploys Manifold's pre-built, **public images** from the GitHub Container Registry (`ghcr.io`) to a single VM — no local build required
+- A **git submodule** pointing to the Manifold source code, used only if you choose to build and deploy your own images (see [Deploy from source](#deploy-from-source))
 
 Manifold is a twelve factor application. The source code and service images are immutable — configuration is provided 
 via environment variables, and persistent state is limited to two areas: **asset storage** and the **database**. Asset 
@@ -25,18 +24,22 @@ gets its own isolated set of containers, volumes, and data directories.
 
 Kamal deploys containers per destination, all connected over a shared Docker network (`kamal`):
 
-| Container                      | Role                              | Image Source              | Managed as           |
-|--------------------------------|-----------------------------------|---------------------------|----------------------|
-| `manifold-web-<dest>-<hash>`   | Rails API server (primary)        | `manifold/api`            | Server role (web)    |
-| `manifold-worker-<dest>-<hash>`| Background job processor (GoodJob)| `manifold/api`            | Server role (worker) |
-| `manifold-<dest>-client`       | Client / SSR frontend             | `manifold/client`         | Accessory            |
-| `manifold-<dest>-db`           | PostgreSQL 15 database            | `postgres:15-alpine`      | Optional Accessory   |
-| `manifold-<dest>-storage`      | MinIO S3-compatible object store  | `minio/minio`             | Optional Accessory   |
+| Container                      | Role                              | Image Source                              | Managed as           |
+|--------------------------------|-----------------------------------|-------------------------------------------|----------------------|
+| `manifold-api-web-<dest>-<hash>`   | Rails API server (primary)    | `ghcr.io/manifoldscholar/manifold-api`    | Server role (web)    |
+| `manifold-api-worker-<dest>-<hash>`| Background job processor (GoodJob)| `ghcr.io/manifoldscholar/manifold-api` | Server role (worker) |
+| `manifold-<dest>-client`       | Client / SSR frontend             | `ghcr.io/manifoldscholar/manifold-client` | Accessory            |
+| `manifold-<dest>-db`           | PostgreSQL 15 database            | `postgres:15-alpine`                      | Optional Accessory   |
+| `manifold-<dest>-storage`      | MinIO S3-compatible object store  | `minio/minio`                             | Optional Accessory   |
 
 The Rails API and worker are **server roles**, which means they share the same Docker image and are deployed together 
-with zero downtime by `kamal deploy`. The client runs as an **accessory** with per-destination container names so 
+with zero-downtime rolling restarts. The client runs as an **accessory** with per-destination container names so 
 multiple destinations can coexist on one host. When using a local database, a PostgreSQL container is also deployed as 
 an accessory; with an external database, no database container is needed.
+
+All three Manifold images (`manifold-api` for both web and worker, `manifold-client`) are **pulled pre-built from 
+`ghcr.io`** — deploys do not build anything locally. The published images are public, but Kamal still authenticates to 
+the registry, so a GitHub personal access token is required (see [Registry access](#registry-access)).
 
 While the configuration supports running multiple Manifold instances on a single server (e.g. `production` and `staging` 
 sharing one VM), this is generally not advisable for production deployments due to resource contention and blast radius 
@@ -87,22 +90,37 @@ The client also proxies `/system` (uploaded assets) and `/api/proxy` paths to th
   - SSH access as `root`, **or** a non-root user set up for Docker (see [Deploying as a non-root user](#deploying-as-a-non-root-user))
   - Ports 80 and 443 open to the internet
 - **A domain name** (optional but recommended) with a DNS A record pointing to your server's IP address. Without a domain, the server is accessible via its IP address with SSL disabled.
-- **Docker** installed on your local machine (where you run Kamal from)
+- **A GitHub account** and a `read:packages` personal access token, used to pull the published images (see [Registry access](#registry-access)).
+
+> The default workflow pulls pre-built images, so you do **not** need Docker or the Manifold source on your local machine. Both are only needed if you [deploy from source](#deploy-from-source).
+
+## Registry access
+
+Manifold's images are published **publicly** to the GitHub Container Registry, but Kamal logs in to the registry before pulling — it does this even for public images. You therefore need a GitHub username and a personal access token (PAT) with the **`read:packages`** scope.
+
+Create a token one of two ways:
+
+- **GitHub web UI** (recommended, durable): create a token at [github.com/settings/tokens](https://github.com/settings/tokens) — either a classic PAT with the `read:packages` scope, or a fine-grained token with **Packages: read-only**. See GitHub's docs: [Managing your personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+- **GitHub CLI** (quick): reuse the token `gh` already holds.
+  ```bash
+  gh auth refresh -h github.com -s read:packages
+  gh auth token            # use as the token
+  gh api user --jq .login  # your username
+  ```
+  This is your `gh` session token; it rotates/revokes with your `gh` login, so prefer a dedicated PAT for long-lived deployments.
+
+`bin/deploy configure` prompts for your GitHub username and token and stores them in the (gitignored) secrets file as `KAMAL_REGISTRY_USERNAME` / `KAMAL_REGISTRY_PASSWORD`. Kamal logs in with them on each server before pulling.
 
 ## Quick Start
 
 ### 1. Clone this repository
 
 ```bash
-git clone --recurse-submodules https://github.com/ManifoldScholar/manifold-deploy-example.git
+git clone https://github.com/ManifoldScholar/manifold-deploy-example.git
 cd manifold-deploy-example
 ```
 
-If you already cloned without `--recurse-submodules`:
-
-```bash
-git submodule update --init
-```
+The `manifold` submodule is only needed if you [deploy from source](#deploy-from-source); the default pull-based workflow does not use it, so you can skip `--recurse-submodules`.
 
 ### 2. Install dependencies
 
@@ -132,6 +150,8 @@ It will prompt you for:
 | Server architecture | `amd64` | `amd64` or `arm64` |
 | Database | `local` | `local` (container) or `external` (managed) |
 | Storage backend | `local` | `local` (filesystem), `minio` (self-hosted), or `s3` (external) |
+| GitHub username | (required) | For pulling images from `ghcr.io` — see [Registry access](#registry-access) |
+| GitHub `read:packages` token | (required) | Input is hidden; stored as `KAMAL_REGISTRY_PASSWORD` |
 | Auto-generate secrets | `y` | Generates random keys and passwords |
 
 This creates two files:
@@ -142,19 +162,20 @@ Both are gitignored, so your instance configuration stays out of version control
 
 ### 4. Deploy
 
-All Kamal commands use `-d <destination>` to select your configuration:
+First-time setup bootstraps the server and deploys (all commands use `-d <destination>`):
 
 ```bash
-kamal setup -d production
+bin/deploy setup -d production
 ```
 
 This will:
 - Install Docker on your server (if not already present)
 - Start kamal-proxy (handles HTTPS via Let's Encrypt)
-- Start a local Docker registry on the server
-- Build the API and client images (the client is built by the `.kamal/hooks/pre-build` hook)
+- Log in to `ghcr.io` and pull the published API and client images
 - Deploy all containers
 - Automatically create the database, run migrations, seed data, and run upgrade tasks
+
+`bin/deploy setup` and `bin/deploy up` wrap `kamal setup` / `kamal deploy` with `--skip-push` (pull instead of build) and `--version latest`. To pin a specific published tag, pass `--version <tag>`.
 
 The first deploy takes a few minutes while the database schema is loaded and initial data is seeded. Subsequent deploys are much faster.
 
@@ -202,44 +223,37 @@ For this to work, on the server:
 
 ## Routine Deployments
 
-When you want to redeploy after a Manifold update or configuration change:
+To redeploy after a Manifold release or a config change:
 
 ```bash
-kamal deploy -d production
+bin/deploy up -d production
 ```
 
-This does a zero-downtime deploy of the API and worker (both server roles). The `post-deploy` hook automatically restarts the client accessory so it picks up the latest image.
+This pulls the latest published images and does a zero-downtime rolling deploy of the API and worker. The `post-deploy` hook reboots the client accessory so it picks up the latest client image.
 
 The API container automatically runs migrations and upgrade tasks on startup, so no separate release command is needed.
 
 ## Updating Manifold
 
-To update to a newer version of Manifold:
+By default each deploy pulls the `latest` images, so updating is just a redeploy:
 
 ```bash
-# Pull the latest from the main branch
-cd manifold
-git pull origin main
-cd ..
-
-# Commit the submodule pointer update
-git add manifold
-git commit -m "Update Manifold to $(git -C manifold rev-parse --short HEAD)"
-
-# Deploy the new version
-kamal deploy -d production
+bin/deploy up -d production
 ```
 
-To pin to a specific release tag:
+The published tags are:
+
+- **`latest`** — the most recent stable numbered release (the default)
+- **`preview`** — a preview of the next stable release
+- **`edge`** — the `main` branch; may be unstable
+
+To deploy a specific tag instead of `latest`, pass `--version`:
 
 ```bash
-cd manifold
-git fetch --tags
-git checkout v9.0.0  # or whatever version
-cd ..
-git add manifold
-git commit -m "Pin Manifold to v9.0.0"
+bin/deploy up -d production --version preview
 ```
+
+Available tags are listed on the [Manifold packages](https://github.com/orgs/ManifoldScholar/packages) page.
 
 ## Helper Commands
 
@@ -248,6 +262,8 @@ The `bin/deploy` CLI provides commands for common remote operations. All require
 | Command                | Description                                        |
 |------------------------|----------------------------------------------------|
 | `bin/deploy configure`     | Interactive wizard to generate config and secrets  |
+| `bin/deploy setup`     | First-time setup: bootstrap the server, then deploy |
+| `bin/deploy up`        | Deploy the published images (rolling, no build); `--version <tag>` to pin |
 | `bin/deploy admin`     | Create an admin user (prompts for email/name)      |
 | `bin/deploy status`    | Show containers, volumes, and disk usage           |
 | `bin/deploy logs`      | Tail logs from any container                       |
@@ -296,8 +312,8 @@ lib/manifold/                        # CLI library code (commands, config, UI, t
 config/deploy.yml                    # Base config (tracked) — do not edit
 config/deploy.<dest>.yml             # Your instance overrides (generated by bin/deploy configure)
 .kamal/secrets.<dest>                # Your secrets (generated by bin/deploy configure)
-.kamal/hooks/pre-build               # Builds the client image before each deploy
-.kamal/hooks/post-deploy             # Restarts the client accessory after each deploy
+.kamal/hooks/post-deploy             # Reboots the client accessory after each deploy
+.kamal/hooks/pre-build.sample        # Dormant; activate only to build from source
 ```
 
 All Kamal commands require `-d <destination>` to load your instance config:
@@ -319,19 +335,13 @@ The destination file (`config/deploy.<dest>.yml`) is generated by `bin/deploy co
 
 Everything else (builder config, env var defaults, base accessory definitions, registry settings) is inherited from the base.
 
-### Builder
+### Registry and images
 
-The `builder` section in the base config tells Kamal how to build the API Docker image:
+The base config sets `service: manifold-api`, `image: manifoldscholar/manifold-api`, and `registry.server: ghcr.io`, so the app image resolves to `ghcr.io/manifoldscholar/manifold-api:<tag>`. The client accessory uses `ghcr.io/manifoldscholar/manifold-client`. Deploys pull these published images (the `bin/deploy` wrappers pass `--skip-push`); nothing is built.
 
-```yaml
-builder:
-  arch: amd64
-  context: ./manifold/api       # Build context is the API subdirectory
-  dockerfile: ./manifold/api/Dockerfile
-  target: production            # Multi-stage build target
-```
+`service` must match the `LABEL service` baked into the published API image (`manifold-api`) — on pull, Kamal verifies the image's `service` label equals the configured `service`, so do not change it.
 
-The client image is built separately by the `.kamal/hooks/pre-build` hook using the same pattern (`manifold/client/Dockerfile`, `production` target). The pre-build hook also pushes the client image to the local registry and pre-pulls it on the server so it's available when accessories boot (after the registry tunnel closes).
+The `builder` block in the base config is unused by the default pull workflow (Kamal validates that it has an `arch`, but never invokes it). It only matters if you [deploy from source](#deploy-from-source).
 
 ### Proxy and routing
 
@@ -402,6 +412,8 @@ The following are added **only for MinIO**, since MinIO objects are proxied thro
 
 | Secret                  | Description                                       | Derived from        |
 |-------------------------|---------------------------------------------------|---------------------|
+| `KAMAL_REGISTRY_USERNAME` | GitHub username for `ghcr.io`                   | —                   |
+| `KAMAL_REGISTRY_PASSWORD` | GitHub `read:packages` token (PAT)              | —                   |
 | `SECRET_KEY_BASE`       | Rails encryption key                              | —                   |
 | `RAILS_SECRET_KEY`      | Manifold secret key (alias)                       | `$SECRET_KEY_BASE`  |
 
@@ -449,6 +461,7 @@ The base config defines aliases for common operations:
 ```bash
 kamal console -d production          # Rails console on the API container
 kamal shell -d production            # Bash shell on the API container
+kamal dbconsole -d production        # psql on the database (local-database deployments only)
 kamal logs-api -d production         # API logs
 kamal logs-client -d production      # Client logs
 kamal logs-worker -d production      # Worker logs
@@ -520,8 +533,8 @@ You can deploy multiple Manifold instances to the same server. Each destination 
 bin/deploy configure                    # Creates config/deploy.production.yml
 bin/deploy configure -d staging         # Creates config/deploy.staging.yml
 
-kamal setup -d production
-kamal setup -d staging
+bin/deploy setup -d production
+bin/deploy setup -d staging
 ```
 
 Containers are named with per-destination prefixes (`manifold-production-db`, `manifold-staging-db`, etc.) so they don't conflict. All destinations share the same kamal-proxy instance and Docker network.
@@ -545,10 +558,34 @@ The cache database is expected to be named `<db_name>_cache`.
 
 You can also switch an existing destination between local and external by re-running `bin/deploy configure -d <dest>` — existing secrets are preserved and new ones are prompted as needed.
 
+## Deploy from source
+
+The default workflow pulls Manifold's published images. To run your own build instead — to deploy a patched Manifold, or to avoid `ghcr.io` — build the images from the `manifold` submodule and push them to a registry you control (Docker Hub, GHCR under your own account, a private registry, etc.).
+
+1. **Check out the submodule** at the commit/tag you want:
+   ```bash
+   git submodule update --init
+   cd manifold && git checkout v9.0.0 && cd ..   # optional: pin a version
+   ```
+2. **Point the config at your registry.** In `config/deploy.yml`, set `registry.server` (plus `username`/`password` if it's private) to your registry, set `image:` to your API image path, and set `accessories.client.image:` to your client image path. The `builder` block is already set up to build the API from `manifold/api`.
+3. **Activate the client build hook.** Kamal builds the API image, but the client is an accessory, so build + push it via the hook:
+   ```bash
+   cp .kamal/hooks/pre-build.sample .kamal/hooks/pre-build
+   chmod +x .kamal/hooks/pre-build
+   ```
+   Edit it (or set `MANIFOLD_CLIENT_IMAGE`) to point at your client image path.
+4. **Deploy with plain `kamal`** — not `bin/deploy up`/`setup`, which pass `--skip-push`. Plain `kamal` builds and pushes:
+   ```bash
+   kamal setup  -d production   # first time
+   kamal deploy -d production   # subsequent
+   ```
+
+This path requires Docker locally and push access to your registry. Keep `service: manifold-api` — the API image must carry `LABEL service=manifold-api` (the Manifold Dockerfile already sets it) to pass Kamal's image check.
+
 ## Troubleshooting
 
-**Build fails during `kamal setup`:**
-Make sure the `manifold` submodule is checked out: `git submodule update --init`.
+**Image pull or registry login fails during deploy:**
+Confirm `KAMAL_REGISTRY_USERNAME` / `KAMAL_REGISTRY_PASSWORD` in `.kamal/secrets.<dest>` are a valid GitHub username and a `read:packages` token (see [Registry access](#registry-access)). An `unauthorized`/`denied` error means the token is missing the scope or has expired. If you are [building from source](#deploy-from-source), make sure the submodule is checked out: `git submodule update --init`.
 
 **SSL certificate not issued:**
 Ensure your domain's DNS A record points to the server IP and ports 80/443 are open. Let's Encrypt needs to reach the server to issue certificates.

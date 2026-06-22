@@ -169,7 +169,7 @@ module Manifold
       def find_app_container(role)
         out = ssh_capture(@host, @ssh_user,
           "docker ps -a --latest --format '{{.Names}}' " \
-          "--filter label=service=manifold " \
+          "--filter label=service=manifold-api " \
           "--filter label=destination=#{@dest} " \
           "--filter label=role=#{role}")
         name = out.to_s.strip

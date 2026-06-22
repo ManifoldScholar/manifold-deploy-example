@@ -2,9 +2,14 @@
 # Manifold Self-Hosted Deployment Configuration (Kamal 2)
 # =============================================================================
 #
-# Run bin/deploy configure to generate your instance configuration. This base file
-# contains defaults shared by all destinations.
+# Run bin/deploy configure to generate your instance configuration. This base
+# file contains defaults shared by all destinations.
 #
+# By default this deploys Manifold's pre-built, PUBLIC images from GitHub
+# Container Registry (ghcr.io) — no local build. Kamal still logs in to the
+# registry even for public images, so you must supply a GitHub username and a
+# read:packages personal access token (see the README, "Registry access").
+# To build and push your own images instead, see "Deploy from source".
 # =============================================================================
 
 # -- Instance Configuration ---------------------------------------------------
@@ -40,11 +45,17 @@ x-rails-secrets: &rails-secrets
   - PGPASSWORD
 
 # -- Service ------------------------------------------------------------------
-# The primary service is the Rails API. Kamal builds its image, manages
-# zero-downtime deploys, and routes `kamal app exec` / `kamal console` here.
+# The primary service is the Rails API. With the registry server below, the
+# image resolves to ghcr.io/manifoldscholar/manifold-api:<version>. Deploys
+# pull this published image (bin/deploy up passes --skip-push); the API and
+# worker are server roles with zero-downtime rolling deploys.
+#
+# `service` MUST match the `LABEL service` baked into the published image
+# (manifold-api) — on pull, Kamal verifies the image's service label equals
+# this value. Do not change it.
 
-service: manifold
-image: manifold-api
+service: manifold-api
+image: manifoldscholar/manifold-api
 
 servers:
   web:
@@ -70,6 +81,26 @@ proxy:
   healthcheck:
     path: /api/up
 
+# -- Registry -----------------------------------------------------------------
+# Default: pull Manifold's published PUBLIC images from GitHub Container
+# Registry. Kamal logs in even for public images, so supply your GitHub
+# username and a read:packages personal access token (PAT). Both are kept in
+# the gitignored secrets file (.kamal/secrets.<dest>) so nothing per-deployer
+# lands in this tracked config. See the README, "Registry access".
+# For build-from-source, point this at your own registry instead.
+
+registry:
+  server: ghcr.io
+  username:
+    - KAMAL_REGISTRY_USERNAME
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# -- Builder ------------------------------------------------------------------
+# Only used when building from source (kamal deploy WITHOUT --skip-push). The
+# default pull-based deploy skips the build entirely, so the submodule is not
+# needed. Kamal still validates `arch`.
+
 builder:
   arch: amd64  # Your server's architecture: amd64 (x86_64) or arm64 (aarch64)
   context: ./manifold/api
@@ -85,13 +116,6 @@ env:
     WORKER_COUNT: "2"
     RAILS_MAX_THREADS: "20"
   secret: *rails-secrets
-
-# -- Registry -----------------------------------------------------------------
-# Uses a local Docker registry on the server. No external registry account
-# needed. See: https://kamal-deploy.org/docs/configuration/docker-registry/
-
-registry:
-  server: localhost:5555
 
 # -- SSH ----------------------------------------------------------------------
 
@@ -109,6 +133,7 @@ deploy_timeout: 120
 aliases:
   console: app exec -i --reuse "bin/rails console"
   shell: app exec -i --reuse "bash"
+  dbconsole: accessory exec db -i --reuse "psql -U manifold manifold_production"
   logs-api: app logs
   logs-client: accessory logs client
   logs-worker: app logs -r worker
@@ -116,11 +141,12 @@ aliases:
 # -- Accessories --------------------------------------------------------------
 # These services support the primary API application. They share the "kamal"
 # Docker network and reach each other by container name (e.g.
-# manifold-<dest>-client, manifold-<dest>-db).
+# manifold-<dest>-client, manifold-<dest>-db). The client image is also pulled
+# from ghcr.io.
 
 accessories:
   client:
-    image: localhost:5555/manifold-client:latest
+    image: ghcr.io/manifoldscholar/manifold-client:latest
     host: *server-ip
     proxy:
       host: *domain
@@ -139,4 +165,3 @@ accessories:
         CLIENT_BROWSER_API_CABLE_URL: *client-url
         CLIENT_SERVER_API_URL: "http://manifold-api:3011"
         CLIENT_SERVER_PROXIES: "true"
-

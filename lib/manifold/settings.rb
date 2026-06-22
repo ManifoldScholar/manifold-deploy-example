@@ -11,6 +11,7 @@ module Manifold
       server_ip domain arch
       database db_host db_port db_user db_name
       storage s3_endpoint s3_region s3_bucket s3_force_path_style
+      github_username registry_pat
       secret_key_base postgres_password db_password
       minio_root_password s3_access_key_id s3_secret_access_key
     ].freeze
@@ -18,6 +19,8 @@ module Manifold
     # Maps secrets-file keys to setting field names. Single source of truth
     # for which raw secret values get loaded back into the wizard.
     SECRET_KEYS = {
+      "KAMAL_REGISTRY_USERNAME" => :github_username,
+      "KAMAL_REGISTRY_PASSWORD" => :registry_pat,
       "SECRET_KEY_BASE"      => :secret_key_base,
       "POSTGRES_PASSWORD"    => :postgres_password,
       "RAILS_DB_PASS"        => :db_password,

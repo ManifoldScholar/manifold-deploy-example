@@ -1,37 +1,24 @@
 #!/usr/bin/env ruby
 #
-# Post-deploy hook for Kamal deployments.
+# Post-deploy hook.
 #
-# Restarts the client accessory so it picks up the latest image pushed
-# during pre-build. Without this, `kamal deploy` only updates the API
-# and worker roles — the client accessory keeps running the old image.
+# The client runs as an accessory, so `kamal deploy` (which only updates the
+# app's server roles) leaves it running the old image. Reboot it so it pulls
+# and runs the latest published client image.
 #
-# We can't use `kamal accessory reboot` because it tries to pull the
-# image from the local registry, but the SSH tunnel is closed by now.
-# Instead, stop/remove the old container directly, then boot via kamal
-# which uses the already-pulled image.
+# Images come from a real registry (ghcr.io by default), so a plain
+# `kamal accessory reboot` works — it re-pulls and re-registers with the proxy.
+# (The old local-registry setup couldn't do this because its SSH tunnel was
+# already closed by post-deploy; that constraint is gone.)
 
 require "bundler/setup"
 $stdout.reopen("/dev/tty", "w")
 $stderr.reopen("/dev/tty", "w")
 require_relative "../../lib/manifold/ui"
-require_relative "../../lib/manifold/config"
 
-server = ENV.fetch("KAMAL_HOSTS").split(",").first
 dest = ENV["KAMAL_DESTINATION"]
 dest_flag = dest ? ["-d", dest] : []
-container = dest ? "manifold-#{dest}-client" : "manifold-client"
 
-# Match the SSH user Kamal connects as (ssh.user in config/deploy.yml,
-# defaulting to root). This SSH call bypasses Kamal's own connection.
-ssh_user = dest ? Manifold::Config.resolve_host(dest)[1] : "root"
-
-Manifold::UI.step "Updating client accessory..."
-
-IO.popen(["ssh", "#{ssh_user}@#{server}",
-  "docker stop #{container} 2>/dev/null; docker rm #{container} 2>/dev/null; true"],
-  err: File::NULL, &:read)
-
-system("kamal", "accessory", "boot", "client", *dest_flag, exception: true)
-
+Manifold::UI.step "Rebooting client accessory to pick up the latest image..."
+system("kamal", "accessory", "reboot", "client", *dest_flag, exception: true)
 Manifold::UI.step "Client accessory updated."

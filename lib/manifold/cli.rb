@@ -1,6 +1,7 @@
 require "dry/cli"
 require_relative "command"
 require_relative "commands/configure"
+require_relative "commands/deploy"
 require_relative "commands/status"
 require_relative "commands/logs"
 require_relative "commands/admin"
@@ -13,6 +14,8 @@ module Manifold
     extend Dry::CLI::Registry
 
     register "configure", Commands::Configure
+    register "setup",     Commands::Setup
+    register "up",        Commands::Up
     register "status",    Commands::Status
     register "logs",      Commands::Logs
     register "admin",     Commands::Admin
