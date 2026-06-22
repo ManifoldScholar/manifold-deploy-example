@@ -15,15 +15,20 @@ require "bundler/setup"
 $stdout.reopen("/dev/tty", "w")
 $stderr.reopen("/dev/tty", "w")
 require_relative "../../lib/manifold/ui"
+require_relative "../../lib/manifold/config"
 
 server = ENV.fetch("KAMAL_HOSTS").split(",").first
 dest = ENV["KAMAL_DESTINATION"]
 dest_flag = dest ? ["-d", dest] : []
 container = dest ? "manifold-#{dest}-client" : "manifold-client"
 
+# Match the SSH user Kamal connects as (ssh.user in config/deploy.yml,
+# defaulting to root). This SSH call bypasses Kamal's own connection.
+ssh_user = dest ? Manifold::Config.resolve_host(dest)[1] : "root"
+
 Manifold::UI.step "Updating client accessory..."
 
-IO.popen(["ssh", "root@#{server}",
+IO.popen(["ssh", "#{ssh_user}@#{server}",
   "docker stop #{container} 2>/dev/null; docker rm #{container} 2>/dev/null; true"],
   err: File::NULL, &:read)
 
